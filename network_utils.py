@@ -482,7 +482,7 @@ class RedfishManager(NetworkManager):
             timeout: Таймаут выполнения
 
         Returns:
-            NetworkResult: Результат выполнения
+            NetworkResult: Результат ��ыполнени��
 
         Raises:
             CommandError: При ошибке выполнения запроса
@@ -540,6 +540,40 @@ class RedfishManager(NetworkManager):
             msg = f"Ошибка проверки Redfish соединения: {e}"
             self.logger.error(msg)
             raise NetworkError(msg)
+
+    def run_request(
+        self,
+        method: str,
+        endpoint: str,
+        data: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None
+    ) -> Optional[requests.Response]:
+        """
+        Выполняет HTTP запрос к Redfish API.
+
+        Args:
+            method: HTTP метод
+            endpoint: Endpoint API
+            data: Данные для отправки
+            headers: Заголовки запроса
+
+        Returns:
+            Optional[requests.Response]: Ответ сервера или None при ошибке
+        """
+        try:
+            url = f"{self.base_url}{endpoint}"
+            response = self.session.request(
+                method=method,
+                url=url,
+                json=data,
+                headers=headers,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response
+        except Exception as e:
+            self.logger.error(f"Ошибка при выполнении запроса: {e}")
+            return None
 
 
 def wait_for_port(

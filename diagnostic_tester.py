@@ -1,8 +1,7 @@
 """Модуль для диагностического тестирования."""
 
 import logging
-import time
-from typing import Dict, Any, Optional, List, cast
+from typing import Optional, List, cast
 from base_tester import BaseTester
 from network_utils import SSHManager, RedfishManager, wait_for_port
 
@@ -44,29 +43,12 @@ class DiagnosticTester(BaseTester):
             diag_config.get('ssh_commands', '').split(',')
         )
 
-        # Таймауты и повторы
-        self.setup_timeout = int(diag_config.get('setup_timeout', '30'))
-        self.verify_timeout = int(diag_config.get('verify_timeout', '60'))
-        self.retry_count = int(diag_config.get('retry_count', '3'))
-        self.retry_delay = int(diag_config.get('retry_delay', '10'))
-
-        # Дополнительные параметры
-        self.verify_access = diag_config.get(
-            'verify_access',
-            'true'
-        ).lower() == 'true'
-        self.check_all_interfaces = diag_config.get(
-            'check_all_interfaces',
-            'true'
-        ).lower() == 'true'
-        self.collect_logs = diag_config.get(
-            'collect_logs',
-            'true'
-        ).lower() == 'true'
-
         # Инициализация других тестеров
         self.ssh_tester = SSHManager(config_file, logger)
         self.redfish_tester = RedfishManager(config_file, logger)
+
+        # Добавляем параметр collect_logs
+        self.collect_logs = diag_config.get('collect_logs', 'true').lower() == 'true'
 
         self.logger.debug("Инициализация Diagnostic тестера завершена")
 
@@ -85,8 +67,7 @@ class DiagnosticTester(BaseTester):
                 if not wait_for_port(
                     cast(str, self.ipmi_host),
                     port,
-                    timeout=self.verify_timeout,
-                    retry_interval=self.retry_delay
+                    timeout=self.verify_timeout
                 ):
                     self.logger.error(
                         f"Порт {port} недоступен на {self.ipmi_host}"
@@ -218,7 +199,7 @@ class DiagnosticTester(BaseTester):
             return True
 
         except Exception as e:
-            self.logger.error(f"Ошибка при сборе диагностических логов: {e}")
+            self.logger.error(f"Ошибка при сборе диагн��стических логов: {e}")
             return False
         finally:
             self.ssh_tester.disconnect()
@@ -230,25 +211,30 @@ class DiagnosticTester(BaseTester):
 
             # Тестируем сетевую доступность
             if not self.test_network_connectivity():
-                raise RuntimeError("Тест сетевой доступности не прошел")
-            self.add_test_result('Network Connectivity Test', True)
+                self.add_test_result('Network Connectivity Test', False,
+                                   "Тест сетевой доступности не прошел")
+            else:
+                self.add_test_result('Network Connectivity Test', True)
 
             # Тестируем Redfish API
             if not self.test_redfish_api():
-                raise RuntimeError("Тест Redfish API не прошел")
-            self.add_test_result('Redfish API Test', True)
+                self.add_test_result('Redfish API Test', False,
+                                   "Тест Redfish API не прошел")
+            else:
+                self.add_test_result('Redfish API Test', True)
 
             # Тестируем SSH подключение
             if not self.test_ssh_connectivity():
-                raise RuntimeError("Тест SSH подключения не прошел")
-            self.add_test_result('SSH Connectivity Test', True)
+                self.add_test_result('SSH Connectivity Test', False,
+                                   "Тест SSH подключения не прошел")
+            else:
+                self.add_test_result('SSH Connectivity Test', True)
 
             # Собираем диагностические логи если требуется
             if self.collect_logs:
                 if not self.collect_diagnostic_logs():
-                    self.logger.warning(
-                        "Не удалось собрать диагностические логи"
-                    )
+                    self.add_test_result('Diagnostic Logs Collection', False,
+                                       "Не удалось собрать диагностические логи")
                 else:
                     self.add_test_result('Diagnostic Logs Collection', True)
 

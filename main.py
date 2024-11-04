@@ -4,7 +4,6 @@ import logging
 import signal
 import sys
 import traceback
-import threading
 from typing import Dict, Set, TypedDict, List, Any, Optional
 from pathlib import Path
 from datetime import datetime
@@ -15,7 +14,6 @@ from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
 from rich import box
 from rich.align import Align
-from rich.markdown import Markdown
 
 # Импортируем все тестеры
 from base_tester import BaseTester
@@ -70,19 +68,6 @@ STYLES = {
     'selected': 'bold white on blue',
 }
 
-# Горячие клавиши (удалены, так как не используются)
-# HOTKEYS = {
-#     'q': 'Выход',
-#     'h': 'Помощь',
-#     'r': 'Запуск тестов',
-#     'a': 'Выбрать все',
-#     'n': 'Снять выбор',
-#     's': 'Поиск',
-#     'f': 'Фильтр',
-#     'v': 'Просмотр выбранных',
-#     'c': 'Очистить консоль'
-# }
-
 class TestCategory(TypedDict):
     """Структура для категории тестов."""
     name: str
@@ -93,7 +78,7 @@ class TestCategory(TypedDict):
 class TesterDescription(TypedDict):
     """Структура для описания тестера."""
     name: str
-    class_name: str
+    class_obj: Any  # Изменено с class_name на class_obj
     description: str
     details: str
     dependencies: List[str]
@@ -176,7 +161,7 @@ for category_key, category in TEST_CATEGORIES.items():
 TESTER_CLASSES: Dict[str, TesterDescription] = {
     'Network': {
         'name': 'Network Tester',
-        'class_name': 'NetworkTester',
+        'class_obj': NetworkTester,  # Используем объект класса
         'description': 'Тестирование базовых сетевых настроек',
         'details': """
         Проверяет:
@@ -189,7 +174,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'IPVersion': {
         'name': 'IP Version Tester',
-        'class_name': 'IPVersionTester',
+        'class_obj': IPVersionTester,
         'description': 'Тестирование поддержки IPv4 и IPv6',
         'details': """
         Проверяет:
@@ -202,7 +187,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'IPFilter': {
         'name': 'IP Filter Tester',
-        'class_name': 'IPFilterTester',
+        'class_obj': IPFilterTester,
         'description': 'Тестирование IP-фильтрации',
         'details': """
         Проверяет:
@@ -215,7 +200,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'VLAN': {
         'name': 'VLAN Tester',
-        'class_name': 'VLANTester',
+        'class_obj': VLANTester,
         'description': 'Тестирование настроек VLAN',
         'details': """
         Проверяет:
@@ -228,7 +213,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'MAC': {
         'name': 'MAC Address Tester',
-        'class_name': 'MACTester',
+        'class_obj': MACTester,
         'description': 'Тестирование настройки MAC-адресов',
         'details': """
         Проверяет:
@@ -241,7 +226,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'Interface': {
         'name': 'Interface Tester',
-        'class_name': 'InterfaceTester',
+        'class_obj': InterfaceTester,
         'description': 'Тестирование состояния сетевых интерфейсов',
         'details': """
         Проверяет:
@@ -254,7 +239,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'InterfaceStatus': {
         'name': 'Interface Status Tester',
-        'class_name': 'InterfaceStatusTester',
+        'class_obj': InterfaceStatusTester,
         'description': 'Тестирование статуса сетевых интерфейсов',
         'details': """
         Проверяет:
@@ -267,7 +252,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'SSH': {
         'name': 'SSH Tester',
-        'class_name': 'SSHTester',
+        'class_obj': SSHTester,
         'description': 'Тестирование SSH-соединений',
         'details': """
         Проверяет:
@@ -280,7 +265,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'Redfish': {
         'name': 'Redfish Tester',
-        'class_name': 'RedfishTester',
+        'class_obj': RedfishTester,
         'description': 'Тестирование Redfish API',
         'details': """
         Проверяет:
@@ -293,7 +278,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'IPMI': {
         'name': 'IPMI Tester',
-        'class_name': 'IPMITester',
+        'class_obj': IPMITester,
         'description': 'Тестирование IPMI интерфейса',
         'details': """
         Проверяет:
@@ -306,7 +291,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'Load': {
         'name': 'Load Tester',
-        'class_name': 'LoadTester',
+        'class_obj': LoadTester,
         'description': 'Тестирование производительности под нагрузкой',
         'details': """
         Проверяет:
@@ -319,7 +304,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'Diagnostic': {
         'name': 'Diagnostic Tester',
-        'class_name': 'DiagnosticTester',
+        'class_obj': DiagnosticTester,
         'description': 'Тестирование диагностических функций',
         'details': """
         Проверяет:
@@ -333,7 +318,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'PowerState': {
         'name': 'Power State Tester',
-        'class_name': 'PowerStateTester',
+        'class_obj': PowerStateTester,
         'description': 'Тестирование состояния питания сервера',
         'details': """
         Проверяет:
@@ -346,7 +331,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'NTP': {
         'name': 'NTP Tester',
-        'class_name': 'NTPTester',
+        'class_obj': NTPTester,
         'description': 'Тестирование настроек NTP',
         'details': """
         Проверяет:
@@ -359,7 +344,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'ManualNTP': {
         'name': 'Manual NTP Tester',
-        'class_name': 'ManualNTPTester',
+        'class_obj': ManualNTPTester,
         'description': 'Ручная настройка и тестирование NTP',
         'details': """
         Проверяет:
@@ -372,7 +357,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'SNMP': {
         'name': 'SNMP Tester',
-        'class_name': 'SNMPTester',
+        'class_obj': SNMPTester,
         'description': 'Тестирование SNMP-сервера BMC',
         'details': """
         Проверяет:
@@ -386,7 +371,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'DNS': {
         'name': 'DNS Tester',
-        'class_name': 'DNSTester',
+        'class_obj': DNSTester,
         'description': 'Тестирование DNS-настроек',
         'details': """
         Проверяет:
@@ -399,7 +384,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
     },
     'Hostname': {
         'name': 'Hostname Tester',
-        'class_name': 'HostnameTester',
+        'class_obj': HostnameTester,
         'description': 'Тестирование настройки имени хоста',
         'details': """
         Проверяет:
@@ -596,9 +581,9 @@ class TestManager:
                     continue
 
                 # Получаем класс тестера
-                tester_class = globals().get(config['class_name'])
+                tester_class = config['class_obj']
                 if not tester_class:
-                    self.logger.error(f"Не найден класс {config['class_name']} для тестера {name}")
+                    self.logger.error(f"Не найден класс для тестера {name}")
                     continue
 
                 # Создаем экземпляр тестера
@@ -771,6 +756,57 @@ class TestManager:
         summary = f"[bold green]Успешно: {success}[/bold green] / [bold red]Неудачно: {failure}[/bold red] / [bold blue]Всего: {total}[/bold blue]"
         console.print(Panel(summary, title="Сводка", style="bold cyan"))
 
+    def run_tests_directly(self) -> None:
+        """Запускает тесты без ожидания ввода горячих клавиш."""
+        if not self.selected_testers:
+            console.print("[yellow]Нет выбранных тестов для запуска.[/yellow]")
+            self.logger.info("Попытка запуска тестов без выбранных тестеров")
+            return
+
+        # Инициализация тестеров
+        tester_instances = self.initialize_testers()
+        if not tester_instances:
+            console.print("[red]Нет доступных тестеров для выполнения.[/red]")
+            return
+
+        # Показываем выбранные тесты
+        self.display_testers_table({name: {} for name in tester_instances.keys()})
+
+        # Показываем сводку перед запуском
+        self.display_summary()
+
+        if not Confirm.ask("Начать выполнение тестов?"):
+            self.logger.info("Пользователь отказался от запуска тестов")
+            return
+
+        # Запрос на количество итераций
+        while True:
+            try:
+                iterations = int(
+                    Prompt.ask(f"\n[bold blue]Введите количество повторений [{MIN_ITERATIONS}-{MAX_ITERATIONS}]:[/bold blue]")
+                )
+                if MIN_ITERATIONS <= iterations <= MAX_ITERATIONS:
+                    break
+                console.print(f"[red]Значение должно быть между {MIN_ITERATIONS} и {MAX_ITERATIONS}.[/red]")
+            except ValueError:
+                console.print("[red]Введите корректное целое число.[/red]")
+
+        # Запуск тестов
+        start_time = datetime.now()
+        test_results = self.run_tests(iterations)
+
+        # Генерация отчета
+        self.generate_test_report(test_results, start_time)
+
+        # Отображение результатов в консоли
+        self.display_test_report(test_results)
+
+        # Спрашиваем о продолжении
+        if not Confirm.ask("Хотите запустить другие тесты?"):
+            self.running = False
+            self.logger.info("Пользователь завершил работу с тестами")
+            sys.exit(0)
+
     def run(self) -> None:
         """Запускает основную логику тестирования."""
         try:
@@ -814,43 +850,8 @@ class TestManager:
                     self.logger.info("Тестирование отменено пользователем")
                     break
 
-                # Показываем выбранные тесты
-                self.display_testers_table({name: {} for name in self.selected_testers})
-
-                # Показываем сводку перед запуском
-                self.display_summary()
-
-                if not Confirm.ask("Начать выполнение тестов?"):
-                    self.logger.info("Пользователь отказался от запуска тестов")
-                    continue
-
-                # Запрос на количество итераций
-                while True:
-                    try:
-                        iterations = int(
-                            Prompt.ask(f"\n[bold blue]Введите количество повторений [{MIN_ITERATIONS}-{MAX_ITERATIONS}]:[/bold blue]")
-                        )
-                        if MIN_ITERATIONS <= iterations <= MAX_ITERATIONS:
-                            break
-                        console.print(f"[red]Значение должно быть между {MIN_ITERATIONS} и {MAX_ITERATIONS}.[/red]")
-                    except ValueError:
-                        console.print("[red]Введите корректное целое число.[/red]")
-
                 # Запуск тестов
-                start_time = datetime.now()
-                test_results = self.run_tests(iterations)
-
-                # Генерация отчета
-                self.generate_test_report(test_results, start_time)
-
-                # Отображение результатов в консоли
-                self.display_test_report(test_results)
-
-                # Спрашиваем о продолжении
-                if not Confirm.ask("Хотите запустить другие тесты?"):
-                    self.running = False
-                    self.logger.info("Пользователь завершил работу с тестами")
-                    break
+                self.run_tests_directly()
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Прервано пользователем.[/yellow]")

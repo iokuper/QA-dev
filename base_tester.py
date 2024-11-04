@@ -132,16 +132,40 @@ class BaseTester:
         self,
         command: List[str],
         timeout: Optional[int] = None
-    ) -> Any:
-        """Выполняет команду с обработкой ошибок."""
+    ) -> subprocess.CompletedProcess:
+        """
+        Выполняет команду с обработкой ошибок.
+
+        Args:
+            command: Команда для выполнения
+            timeout: Таймаут выполнения
+
+        Returns:
+            subprocess.CompletedProcess: Результат выполнения
+
+        Raises:
+            RuntimeError: При ошибке выполнения команды
+        """
         try:
-            result = super()._run_command(command, timeout)
-            if "Set LAN Parameter failed" in result.stderr:
-                raise RuntimeError("Ошибка установки параметров LAN")
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout or self.command_timeout
+            )
+
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"Command failed with code {result.returncode}: {result.stderr}"
+                )
+
             return result
+
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(f"Command timed out after {e.timeout}s")
         except Exception as e:
-            self.logger.error(f"Ошибка выполнения команды: {e}")
-            raise
+            raise RuntimeError(f"Error executing command: {e}")
 
     def _verify_host_access(self) -> bool:
         """
