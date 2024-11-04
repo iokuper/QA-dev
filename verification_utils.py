@@ -63,9 +63,9 @@ def verify_settings(
             success = False
             continue
 
-        # Приводим к строкам и нижнему регистру для сравнения
-        actual_str = str(actual_value).lower()
-        expected_str = str(expected_value).lower()
+        # Приводим к строкам и нормализуем значения
+        actual_str = str(actual_value).lower().replace(' address', '')
+        expected_str = str(expected_value).lower().replace(' address', '')
 
         # Пропускаем временные значения 0.0.0.0
         if actual_str == "0.0.0.0" and expected_str != "0.0.0.0":
@@ -289,7 +289,7 @@ def verify_network_access(
 
     Args:
         ip: IP-адрес для проверки
-        ports: Список портов ��ля проверки
+        ports: Список портов ля проверки
         logger: Логгер для вывода сообщений
 
     Returns:
