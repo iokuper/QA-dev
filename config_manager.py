@@ -96,7 +96,7 @@ class ConfigManager:
                         f"Не указано имя пользователя для {section}"
                     )
                 if not credentials.get('password'):
-                    raise ConfigError(f"Не указан пароль для {section}")
+                    raise ConfigError(f"Не указан проль для {section}")
 
             # Проверяем таймауты и повторы
             for section in self.config.sections():
@@ -202,7 +202,7 @@ class ConfigManager:
                     ).decode()
                 except Exception as e:
                     raise ConfigError(
-                        f"Ошибка расшифровки пароля в секции {section}: {e}"
+                        f"Ошибка асшифровки паоля в секции {section}: {e}"
                     )
 
             credentials = {
@@ -316,24 +316,56 @@ class ConfigManager:
         except Exception as e:
             raise ConfigError(f"Ошибка расшифровки пароля: {e}")
 
-    def get_network_params(self, section: str, network: str) -> Dict[str, Any]:
+    def get_network_params(
+        self,
+        section: str,
+        current_ip: str
+    ) -> Dict[str, Union[str, List[str]]]:
         """
         Получает параметры сети из конфигурации.
 
         Args:
             section: Название секции
-            network: Номер сети
+            current_ip: Текущий IP-адрес
 
         Returns:
-            Dict[str, Any]: Параметры сети
+            Dict с параметрами:
+            - ips: Список тестовых IP-адресов
+            - gateway: Шлюз по умолчанию
+            - subnet_mask: Маска подсети
+            - invalid_ips: Список некорректных IP
+            - invalid_masks: Список некорректных масок
+            - invalid_gateways: Список некорректных шлюзов
         """
         try:
-            config = self.get_network_config(section)
-            network_params = {
-                'ips': [f'10.227.{network}.175'],  # Пример формирования IP
-                'gateway': f'10.227.{network}.254',  # Пример формирования шлюза
-                'subnet_mask': '255.255.255.0'
+            if not self.config.has_section(section):
+                raise ConfigError(f"Секция не найдена: {section}")
+
+            # Получаем тестовые сетевые параметры
+            network = current_ip.split('.')[2]
+            params = {
+                'ips': [f'10.227.{network}.250'],
+                'gateway': f'10.227.{network}.254',
+                'subnet_mask': self.config[section].get('subnet_mask', '255.255.255.0')
             }
-            return network_params
+
+            # Получаем параметры для тестирования некорректных значений
+            params.update({
+                'invalid_ips': [
+                    ip.strip()
+                    for ip in self.config[section].get('invalid_ips', '').split(',')
+                ],
+                'invalid_masks': [
+                    mask.strip()
+                    for mask in self.config[section].get('invalid_masks', '').split(',')
+                ],
+                'invalid_gateways': [
+                    gw.strip()
+                    for gw in self.config[section].get('invalid_gateways', '').split(',')
+                ]
+            })
+
+            return params
+
         except Exception as e:
             raise ConfigError(f"Ошибка получения параметров сети: {e}")

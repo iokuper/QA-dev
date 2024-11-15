@@ -1,3 +1,5 @@
+# main_module.py
+
 """Основной модуль для запуска тестов."""
 
 import logging
@@ -14,6 +16,8 @@ from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
 from rich import box
 from rich.align import Align
+import urllib3
+import os
 
 # Импортируем все тестеры
 from base_tester import BaseTester
@@ -36,6 +40,9 @@ from ntp_tester import NTPTester
 from manual_ntp_tester import ManualNTPTester
 from snmp_tester import SNMPTester
 from logger import setup_logger
+
+# Отключаем предупреждения urllib3 о небезопасных соединениях
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Инициализация Rich
 console = Console()
@@ -89,7 +96,7 @@ class TestResult(TypedDict):
     test_name: str
     success: bool
     message: str
-    error_details: str
+    error_details: Optional[str]
     duration: float
     timestamp: str
     test_type: str
@@ -161,7 +168,7 @@ for category_key, category in TEST_CATEGORIES.items():
 TESTER_CLASSES: Dict[str, TesterDescription] = {
     'Network': {
         'name': 'Network Tester',
-        'class_obj': NetworkTester,  # Используем объект класса
+        'class_obj': NetworkTester,
         'description': 'Тестирование базовых сетевых настроек',
         'details': """
         Проверяет:
@@ -309,7 +316,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         'details': """
         Проверяет:
         - Сбор диагностической информации
-        - Анализ системных логов
+        - Анализ системных ло��ов
         - Мониторинг состояния системы
         - Проверка работоспособности компонентов
         """,
@@ -323,7 +330,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         'details': """
         Проверяет:
         - Включение, выключение и перезагрузку сервера
-        - Доступность BMC на всех этапах работы сервера
+        - Доступность BMC на всех этапах рабоы сервера
         - Корректность статуса питания через все интерфейсы
         """,
         'dependencies': ['IPMI'],
@@ -397,16 +404,28 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
 }
 
 class TestManager:
-    """Класс для управления тестами и взаимодействием с пользователем."""
+    """Класс для управления тестами и взаимодействием с ползователем."""
 
     def __init__(self):
-        self.logger: Optional[logging.Logger] = None
+        """
+        Инициализирует TestManager.
+
+        Настраивает логирование и инициализирует необходимые атрибуты.
+        """
+        self.logger: logging.Logger = setup_logger(
+            name='main',
+            log_file=str(LOG_DIR / 'test.log')
+        )
         self.selected_testers: Set[str] = set()
         self.tester_instances: Dict[str, BaseTester] = {}
         self.running = True
 
     def show_help(self) -> None:
-        """Показывает справку по горячим клавишам."""
+        """
+        Показывает справку по горячим клавишам.
+
+        Выводит таблицу с доступными горячими клавишами и их действиями.
+        """
         help_table = Table(title="Горячие клавиши", box=box.SIMPLE_HEAVY)
         help_table.add_column("Клавиша", style="yellow", no_wrap=True)
         help_table.add_column("Действие", style="magenta")
@@ -420,14 +439,20 @@ class TestManager:
             's': 'Поиск',
             'f': 'Фильтр',
             'v': 'Просмотр выбранных',
-            'c': 'Очистить консоль'
+            'c': 'Очистить консоль',
+            'b': 'Назад'
         }.items():
             help_table.add_row(key, description)
 
         console.print(help_table)
 
     def display_testers_table(self, tester_configs: Dict[str, Any]) -> None:
-        """Отображает таблицу выбранных тестеров."""
+        """
+        Отображает таблицу выбранных тестеров.
+
+        Args:
+            tester_configs (Dict[str, Any]): Конфигурации выбранных тестеров.
+        """
         table = Table(title="Выбранные Тесты", box=box.MINIMAL_DOUBLE_HEAD, show_lines=True)
         table.add_column("Тестер", style="cyan", no_wrap=True)
         table.add_column("Описание", style="magenta")
@@ -453,17 +478,21 @@ class TestManager:
         console.print(table)
 
     def display_summary(self) -> None:
-        """Отображает сводку перед запуском тестов."""
+        """
+        Отображает сводку перед запуском тестов.
+
+        Выводит панель с информацией о количестве выбранных тестов и примерном времени выполнения.
+        """
         total_time = sum(TESTER_CLASSES[test]['estimated_time'] for test in self.selected_testers)
         summary_panel = Panel(
             f"""
-            [bold cyan]Выбрано тестов:[/bold cyan] {len(self.selected_testers)}
-            [bold cyan]Примерное время выполнения:[/bold cyan] {total_time // 60}м {total_time % 60}с
+[bold cyan]Выбрано тестов:[/bold cyan] {len(self.selected_testers)}
+[bold cyan]Примерное время выполнения:[/bold cyan] {total_time // 60}м {total_time % 60}с
 
-            [bold yellow]Внимание! Убедитесь, что все необходимые условия соблюдены:
-            • Наличие сетевого подключения
-            • Корректность учетных данных
-            • Доступность BMC[/bold yellow]
+[bold yellow]Внимание! Убедитесь, что все необходимые условия соблюдены:
+• Наличие сетевого подключения
+• Корректность учетных данных
+• Доступность BMC[/bold yellow]
             """,
             title="Сводка перед запуском",
             border_style="blue"
@@ -471,80 +500,389 @@ class TestManager:
         console.print(summary_panel)
 
     def select_tests_interactive(self) -> Set[str]:
-        """Интерактивный выбор тестов с использованием rich."""
+        """
+        Интерактивный выбор тестов с использованием rich.
+
+        Returns:
+            Set[str]: Набор выбранных тестов.
+        """
         try:
-            all_tests = [test for category in TEST_CATEGORIES.values() for test in category['tests']]
-
-            # Отображаем все тесты в таблице
-            test_table = Table(title="Доступные тесты", box=box.ROUNDED, show_lines=True)
-            test_table.add_column("№", style="yellow", no_wrap=True)
-            test_table.add_column("Тестер", style="cyan")
-            test_table.add_column("Описание", style="magenta")
-            test_table.add_column("Категория", style="green")
-
-            test_list = []
-            idx = 1
-            for category_key, category in TEST_CATEGORIES.items():
-                for test in category['tests']:
-                    test_list.append((idx, test, TESTER_CLASSES[test]['description'], category['name']))
-                    idx += 1
-
-            for row in test_list:
-                test_table.add_row(str(row[0]), row[1], row[2], row[3])
-
-            console.print(test_table)
-
-            # Запрос ввода от пользователя
-            console.print("\n[bold cyan]Введите номера тестов через запятую или 'all' для выбора всех тестов.[/bold cyan]")
-            choice = Prompt.ask("Ваш выбор", default="all").strip().lower()
-
-            if choice == 'all':
-                self.logger.info("Пользователь выбрал все тесты")
-                return set(all_tests)
-
             selected_tests = set()
-            invalid_entries = []
 
-            # Обработка ввода с защитой от некорректных символов
-            for item in choice.split(","):
-                try:
-                    item = item.strip().encode('utf-8').decode('utf-8')
-                    if item.isdigit():
-                        idx = int(item) - 1
-                        if 0 <= idx < len(test_list):
-                            selected_tests.add(test_list[idx][1])
-                            self.logger.info(f"Пользователь выбрал тест {test_list[idx][1]}")
-                        else:
-                            invalid_entries.append(item)
-                            self.logger.warning(f"Некорректный номер теста: {item}")
+            while True:
+                # Отображаем категории тестов
+                category_table = Table(title="Категории Тестов", box=box.ROUNDED, show_lines=True)
+                category_table.add_column("№", style="yellow", no_wrap=True)
+                category_table.add_column("Категория", style="cyan")
+                category_table.add_column("Описание", style="magenta")
+                category_table.add_column("Иконка", style="green")
+
+                category_list = list(TEST_CATEGORIES.keys())
+                for idx, category_key in enumerate(category_list, start=1):
+                    category = TEST_CATEGORIES[category_key]
+                    category_table.add_row(
+                        str(idx),
+                        category['name'],
+                        category['description'],
+                        category['icon']
+                    )
+
+                console.print(category_table)
+
+                # Запрос выбора категорий
+                console.print("\n[bold cyan]Выберите категории тестов (например, 1,3), 'all' для всех категорий, 'h' для помощи, 'r' для запуска тестов, 'c' для очистки консоли или 'q' для выхода:[/bold cyan]")
+                choice = Prompt.ask("Ваш выбор").strip().lower()
+
+                # Обработка Горячих Клавиш
+                if choice == 'h':
+                    self.show_help()
+                    continue
+                elif choice == 'q':
+                    self.quit_program()
+                elif choice == 'a':
+                    selected_categories = set(category_list)
+                    self.logger.info("Пользователь выбрал все категории тестов")
+                elif choice == 'n':
+                    selected_categories = set()
+                    selected_tests.clear()
+                    console.print("[yellow]Все категории сняты с выбора.[/yellow]")
+                    self.logger.info("Пользователь снял выбор со всех категорий тестов")
+                    continue
+                elif choice == 'r':
+                    # Запуск тестов прямо из выбора категорий, если есть выбранные тестеры
+                    if self.selected_testers:
+                        self.run_tests_directly()
+                        continue
                     else:
-                        matches = [test for test in all_tests if item in test.lower() or item in TESTER_CLASSES[test]['description'].lower()]
-                        if matches:
-                            selected_tests.update(matches)
-                            self.logger.info(f"Пользователь выбрал тесты по названию: {matches}")
+                        console.print("[yellow]Нет выбранных тестов для запуска. Пожалуйста, выберите тесты сначала.[/yellow]")
+                        self.logger.info("Пользователь попытался запустить тесты без выбранных тестеров")
+                        continue
+                elif choice == 'c':
+                    self.clear_console()
+                    continue
+                elif choice == 'v':
+                    self.view_selected_tests()
+                    continue
+                elif choice == 's':
+                    keyword = Prompt.ask("Введите ключевое слово для поиска категорий").strip()
+                    found_categories = self.search_categories(keyword)
+                    if found_categories:
+                        selected_categories = set(found_categories)
+                        console.print(f"[green]Найдено категорий: {len(found_categories)}[/green]")
+                        self.logger.info(f"Найдено категорий по ключевому слову '{keyword}': {found_categories}")
+                    else:
+                        console.print(f"[red]Категории по ключевому слову '{keyword}' не найдены.[/red]")
+                        self.logger.info(f"Категории по ключевому слову '{keyword}' не найдены.")
+                        continue
+                elif choice == 'f':
+                    # Фильтрация по времени выполнения
+                    try:
+                        min_time = int(Prompt.ask("Введите минимальное время выполнения (с)").strip())
+                        max_time = int(Prompt.ask("Введите максимальное время выполнения (с)").strip())
+                        filtered_categories = [key for key in category_list
+                                               if any(TESTER_CLASSES[test]['estimated_time'] >= min_time and TESTER_CLASSES[test]['estimated_time'] <= max_time
+                                                      for test in TEST_CATEGORIES[key]['tests'])]
+                        if filtered_categories:
+                            selected_categories = set(filtered_categories)
+                            console.print(f"[green]Категории отфильтрованы: {len(filtered_categories)}[/green]")
+                            self.logger.info(f"Категории отфильтрованы по времени выполнения: {filtered_categories}")
+                        else:
+                            console.print(f"[red]Категории по заданным критериям не найдены.[/red]")
+                            self.logger.info("Категории по заданным критериям не найдены.")
+                            continue
+                    except ValueError:
+                        console.print("[red]Некорректный ввод для фильтрации. Попробуйте снова.[/red]")
+                        self.logger.warning("Некорректный ввод для фильтрации.")
+                        continue
+                else:
+                    selected_categories = set()
+                    invalid_entries = []
+
+                    for item in choice.split(","):
+                        item = item.strip()
+                        if item.isdigit():
+                            idx = int(item) - 1
+                            if 0 <= idx < len(category_list):
+                                selected_categories.add(category_list[idx])
+                                self.logger.info(f"Пользователь выбрал категорию {category_list[idx]}")
+                            else:
+                                invalid_entries.append(item)
+                                self.logger.warning(f"Некорректный номер категории: {item}")
                         else:
                             invalid_entries.append(item)
-                            self.logger.warning(f"Некорректное название теста: {item}")
-                except UnicodeError:
-                    invalid_entries.append("некорректный символ")
-                    self.logger.warning("Обнаружены некорректные символы во вводе")
+                            self.logger.warning(f"Некорректный ввод для категории: {item}")
 
-            if invalid_entries:
-                console.print(f"[red]Некорректные номера или названия тестов: {', '.join(invalid_entries)}[/red]")
-                self.logger.warning(f"Некорректные вводы: {', '.join(invalid_entries)}")
+                    if invalid_entries:
+                        # Санитизация сообщений для логирования
+                        sanitized_invalid = [self.sanitize_input(entry) for entry in invalid_entries]
+                        console.print(f"[red]Некорректные номера категорий: {', '.join(sanitized_invalid)}[/red]")
+                        self.logger.warning(f"Некорректные вводы категорий: {', '.join(sanitized_invalid)}")
 
-            if not selected_tests:
-                console.print("[red]Некорректный выбор. Выбрано все тесты по умолчанию.[/red]")
-                self.logger.info("Некорректный выбор, выбраны все тесты по умолчанию")
-                return set(all_tests)
+                    if not selected_categories:
+                        console.print("[red]Некорректный выбор категорий. Попробуйте снова.[/red]")
+                        continue
 
-            return selected_tests
+                # Добавляем тесты из выбранных категорий
+                for category_key in selected_categories:
+                    tests = TEST_CATEGORIES[category_key]['tests']
+                    selected_tests.update(tests)
+
+                # Переходим к выбору конкретных тестеров из выбранных категорий
+                final_selected_tests = self.select_specific_testers(selected_tests)
+
+                return final_selected_tests
+
         except Exception as e:
             self.logger.error(f"Ошибка при выборе тестов: {e}")
             return set()
 
+    def select_specific_testers(self, available_tests: Set[str]) -> Set[str]:
+        """
+        Позволяет пользователю выбрать конкретные тестеры из доступных.
+
+        Args:
+            available_tests (Set[str]): Набор доступных тестов для выбора.
+
+        Returns:
+            Set[str]: Набор выбранных тестов.
+        """
+        selected_tests = set()
+        available_tests = sorted(available_tests)
+        test_list = list(available_tests)
+        total_tests = len(test_list)
+
+        while True:
+            try:
+                # Отображаем доступные тестеры
+                tester_table = Table(title="Доступные Тестеры", box=box.ROUNDED, show_lines=True)
+                tester_table.add_column("№", style="yellow", no_wrap=True)
+                tester_table.add_column("Тестер", style="cyan")
+                tester_table.add_column("Описание", style="magenta")
+                tester_table.add_column("Время (с)", justify="right", style="green")
+
+                for idx, test in enumerate(test_list, start=1):
+                    config = TESTER_CLASSES[test]
+                    tester_table.add_row(
+                        str(idx),
+                        config['name'],
+                        config['description'],
+                        str(config['estimated_time'])
+                    )
+
+                console.print(tester_table)
+
+                # Запрос выбора тестеров
+                console.print("\n[bold cyan]Выберите тестеры для выполнения (например, 1,3,5), 'all' для всех тестеров, 'b' для возврата, 'h' для помощи, 'c' для очистки консоли, 'v' для просмотра выбранных или 'q' для выхода:[/bold cyan]")
+                choice = Prompt.ask("Ваш выбор").strip().lower()
+
+                # Обработка Горячих Клавиш
+                if choice == 'h':
+                    self.show_help()
+                    continue
+                elif choice == 'q':
+                    self.quit_program()
+                elif choice == 'a':
+                    selected_tests.update(available_tests)
+                    self.logger.info("Пользователь выбрал всех доступных тестеров")
+                elif choice == 'n':
+                    selected_tests.clear()
+                    console.print("[yellow]Все тестеры сняты с выбора.[/yellow]")
+                    self.logger.info("Пользователь снял выбор со всех тестеров")
+                    continue
+                elif choice == 'b':
+                    # Возвращаемся к выбору категорий
+                    return self.select_tests_interactive()
+                elif choice == 'c':
+                    self.clear_console()
+                    continue
+                elif choice == 'v':
+                    self.view_selected_tests()
+                    continue
+                elif choice == 'r':
+                    # Запуск тестов прямо из выбора тестеров, если есть выбранные тестеры
+                    if self.selected_testers:
+                        self.run_tests_directly()
+                        continue
+                    else:
+                        console.print("[yellow]Нет выбранных тестов для запуска. Пожалуйста, выберите тесты сначала.[/yellow]")
+                        self.logger.info("Пользователь попытался запустить тесты без выбранных тестеров")
+                        continue
+                elif choice == 's':
+                    keyword = Prompt.ask("Введите ключевое слово для поиска тестеров").strip()
+                    found_testers = self.search_testers(keyword)
+                    if found_testers:
+                        selected_tests.update(found_testers)
+                        console.print(f"[green]Найдено тестеров: {len(found_testers)}[/green]")
+                        self.logger.info(f"Найдено тестеров по ключевому слову '{keyword}': {found_testers}")
+                    else:
+                        console.print(f"[red]Тестеры по ключевому слову '{keyword}' не найдены.[/red]")
+                        self.logger.info(f"Тестеры по ключевому слову '{keyword}' не найдены.")
+                        continue
+                elif choice == 'f':
+                    # Фильтрация по времени выполнения
+                    try:
+                        min_time = int(Prompt.ask("Введите минимальное время выполнения (с)").strip())
+                        max_time = int(Prompt.ask("Введите максимальное время выполнения (с)").strip())
+                        filtered_testers = [test for test in test_list
+                                            if TESTER_CLASSES[test]['estimated_time'] >= min_time and TESTER_CLASSES[test]['estimated_time'] <= max_time]
+                        if filtered_testers:
+                            selected_tests.update(filtered_testers)
+                            console.print(f"[green]Тестеры отфильтрованы: {len(filtered_testers)}[/green]")
+                            self.logger.info(f"Тестеры отфильтрованы по времени выполнения: {filtered_testers}")
+                        else:
+                            console.print(f"[red]Тестеры по заданным критериям не найдены.[/red]")
+                            self.logger.info("Тестеры по заданным критериям не найдены.")
+                            continue
+                    except ValueError:
+                        console.print("[red]Некорректный ввод для фильтрации. Попробуйте снова.[/red]")
+                        self.logger.warning("Некорректный ввод для фильтрации.")
+                        continue
+                else:
+                    invalid_entries = []
+                    for item in choice.split(","):
+                        item = item.strip()
+                        if item.isdigit():
+                            idx = int(item) - 1
+                            if 0 <= idx < total_tests:
+                                selected_tests.add(test_list[idx])
+                                self.logger.info(f"Пользователь выбрал тестер {test_list[idx]}")
+                            else:
+                                invalid_entries.append(item)
+                                self.logger.warning(f"Некорректный номер тестера: {item}")
+                        else:
+                            invalid_entries.append(item)
+                            self.logger.warning(f"Некорректный ввод для тестера: {item}")
+
+                    if invalid_entries:
+                        # Санитизация сообщений для логирования
+                        sanitized_invalid = [self.sanitize_input(entry) for entry in invalid_entries]
+                        console.print(f"[red]Некорректные номера тестеров: {', '.join(sanitized_invalid)}[/red]")
+                        self.logger.warning(f"Некорректные вводы тестеров: {', '.join(sanitized_invalid)}")
+
+                if not selected_tests:
+                    console.print("[red]Некорректный выбор тестеров. Попробуйте снова.[/red]")
+                    self.logger.info("Некорректный выбор тестеров, пробуем снова")
+                    continue
+
+                # Подтверждение выбора
+                self.display_selected_testers(selected_tests)
+                if Confirm.ask("Вы подтверждаете выбор тестеров?"):
+                    break
+                else:
+                    console.print("[yellow]Давайте выберем тестеры заново.[/yellow]")
+                    selected_tests.clear()
+            except Exception as e:
+                self.logger.error(f"Ошибка при выборе тестеров: {e}")
+                return set()
+
+        return selected_tests
+
+    def search_categories(self, keyword: str) -> List[str]:
+        """
+        Ищет категории по ключевому слову.
+
+        Args:
+            keyword (str): Ключевое слово для поиска.
+
+        Returns:
+            List[str]: Список найденных категорий.
+        """
+        return [key for key, category in TEST_CATEGORIES.items() if keyword.lower() in category['name'].lower() or keyword.lower() in category['description'].lower()]
+
+    def search_testers(self, keyword: str) -> List[str]:
+        """
+        Ищет тестеров по ключевому слову.
+
+        Args:
+            keyword (str): Ключевое слово для поиска.
+
+        Returns:
+            List[str]: Список найденных тестеров.
+        """
+        return [test for test, config in TESTER_CLASSES.items() if keyword.lower() in config['name'].lower() or keyword.lower() in config['description'].lower()]
+
+    def clear_console(self) -> None:
+        """Очищает консоль."""
+        os.system('cls' if os.name == 'nt' else 'clear')
+        self.logger.info("Консоль очищена")
+
+    def view_selected_tests(self) -> None:
+        """Отображает текущий список выбранных тестеров."""
+        if not self.selected_testers:
+            console.print("[yellow]Нет выбранных тестов.[/yellow]")
+            return
+
+        table = Table(title="Текущие Выбранные Тестеры", box=box.MINIMAL_DOUBLE_HEAD, show_lines=True)
+        table.add_column("Тестер", style="cyan", no_wrap=True)
+        table.add_column("Описание", style="magenta")
+        table.add_column("Время (с)", justify="right", style="green")
+
+        for test in sorted(self.selected_testers):
+            config = TESTER_CLASSES[test]
+            category_key = TEST_TO_CATEGORY.get(test, "")
+            category = TEST_CATEGORIES.get(category_key, {})
+            icon = category.get('icon', '')
+            table.add_row(
+                f"{icon} {config['name']}",
+                config['description'],
+                str(config['estimated_time'])
+            )
+
+        console.print(table)
+
+    def display_selected_testers(self, selected_tests: Set[str]) -> None:
+        """
+        Отображает текущий выбор тестеров для подтверждения.
+
+        Args:
+            selected_tests (Set[str]): Набор выбранных тестеров.
+        """
+        if not selected_tests:
+            console.print("[yellow]Нет выбранных тестеров.[/yellow]")
+            return
+
+        table = Table(title="Выбранные Тест��ры для Подтверждения", box=box.MINIMAL_DOUBLE_HEAD, show_lines=True)
+        table.add_column("Тестер", style="cyan", no_wrap=True)
+        table.add_column("Описание", style="magenta")
+        table.add_column("Время (с)", justify="right", style="green")
+
+        for test in sorted(selected_tests):
+            config = TESTER_CLASSES[test]
+            category_key = TEST_TO_CATEGORY.get(test, "")
+            category = TEST_CATEGORIES.get(category_key, {})
+            icon = category.get('icon', '')
+            table.add_row(
+                f"{icon} {config['name']}",
+                config['description'],
+                str(config['estimated_time'])
+            )
+
+        console.print(table)
+
+    def sanitize_input(self, input_str: str) -> str:
+        """
+        Санитизирует ввод пользователя для логирования.
+
+        Удаляет или заменяет неподходящие символы.
+
+        Args:
+            input_str (str): Входная строка.
+
+        Returns:
+            str: Санитизированная строка.
+        """
+        try:
+            return input_str.encode('utf-8', 'ignore').decode('utf-8')
+        except UnicodeEncodeError:
+            return ''
+
     def validate_test_definitions(self) -> bool:
-        """Проверяет, что все тесты в TEST_CATEGORIES имеют определения в TESTER_CLASSES."""
+        """
+        Проверяет, что все тесты в TEST_CATEGORIES имеют определения в TESTER_CLASSES.
+
+        Returns:
+            bool: True, если все тесты определены, False иначе.
+        """
         missing_tests = []
         for category in TEST_CATEGORIES.values():
             for test in category['tests']:
@@ -559,7 +897,12 @@ class TestManager:
         return True
 
     def initialize_testers(self) -> Dict[str, Any]:
-        """Инициализирует выбранные тестеры, включая их зависимости."""
+        """
+        Инициализирует выбранные тестеры, включая их зависимости.
+
+        Возвращает:
+            Dict[str, Any]: Словарь инициализированных тестеров.
+        """
         testers = {}
 
         try:
@@ -600,21 +943,30 @@ class TestManager:
             return {}
 
     def run_tests(self, iterations: int) -> Dict[str, List[TestResult]]:
-        """Запускает тесты и возвращает результаты."""
+        """
+        Запускает тесты и возвращает результаты.
+
+        Args:
+            iterations (int): Количество повторений для каждого теста.
+
+        Returns:
+            Dict[str, List[TestResult]]: Результаты тестов для каждого тестера.
+        """
         test_results: Dict[str, List[TestResult]] = {name: [] for name in self.tester_instances.keys()}
-        total_tests = len(self.tester_instances) * iterations
+
+        # Расчёт общего ожидаемого времени выполнения всех тестов
+        total_estimated_time = sum(TESTER_CLASSES[name]['estimated_time'] for name in self.tester_instances.keys()) * iterations
 
         with Progress(
             SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
+            TextColumn("[bold blue]{task.description}"),
             BarColumn(),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TimeElapsedColumn(),
             TimeRemainingColumn(),
             console=console,
             transient=True
         ) as progress:
-            task = progress.add_task("[bold blue]Выполнение тестов...", total=total_tests)
+            task = progress.add_task("[bold blue]Выполнение тестов...", total=total_estimated_time)
             self.logger.info("Начало выполнения тестов")
 
             for iteration in range(iterations):
@@ -628,20 +980,36 @@ class TestManager:
 
                         # Собираем результаты
                         for result in tester.test_results:
+                            # Предполагается, что тестеры заполняют поля 'duration' и 'timestamp'
+                            if 'duration' not in result or 'timestamp' not in result:
+                                result['duration'] = (end_time - start_time).total_seconds()
+                                result['timestamp'] = start_time.strftime("%Y-%m-%d %H:%M:%S")
                             test_results[name].append(result)
 
                         self.logger.info(f"Тест {name} успешно завершен за {(end_time - start_time).total_seconds():.2f}с")
+
+                        # Обновление прогресса на основе 'estimated_time'
+                        estimated_duration = TESTER_CLASSES[name]['estimated_time']
+                        progress.update(task, advance=estimated_duration)
                     except Exception as e:
                         self.logger.error(f"Ошибка при выполнении теста {name}: {e}")
                         self.logger.debug(traceback.format_exc())
-
-                    progress.update(task, advance=1)
+                        # Продолжаем выполнение других тестов
+                        continue
 
         self.logger.info("Выполнение тестов завершено")
         return test_results
 
     def generate_test_report(self, tester_results: Dict[str, List[TestResult]], start_time: datetime) -> None:
-        """Генерирует отчет о тестировании."""
+        """
+        Генерирует отчет о тестировании.
+
+        Создает лог-файл и Markdown-отчет с результатами тестирования.
+
+        Args:
+            tester_results (Dict[str, List[TestResult]]): Результаты тестов.
+            start_time (datetime): Время начала тестирования.
+        """
         try:
             timestamp = start_time.strftime("%Y%m%d_%H%M%S")
             report_file = REPORT_DIR / f"test_report_{timestamp}.log"
@@ -666,7 +1034,7 @@ class TestManager:
                     f.write(f"Успешно: {success_count}/{len(results)}\n")
 
                     for result in results:
-                        status = "✓" if result['success'] else "✗"
+                        status = "✓" if result['success'] else "���"
                         msg = f" - {result.get('message', '')}" if result.get('message') else ""
                         error = f"\nОшибка: {result.get('error_details', '')}" if result.get('error_details') else ""
 
@@ -685,7 +1053,7 @@ class TestManager:
 
             # Генерация Markdown-отчета с помощью rich
             report_markdown = []
-            report_markdown.append("# Отчет о тестировании\n")
+            report_markdown.append("# Отчет о тестирвании\n")
             report_markdown.append(f"**Время начала:** {start_time}\n")
             report_markdown.append(f"**Время окончания:** {datetime.now()}\n")
             report_markdown.append(f"**Длительность:** {(datetime.now() - start_time).total_seconds():.1f}с\n")
@@ -734,7 +1102,12 @@ class TestManager:
             self.logger.debug(traceback.format_exc())
 
     def display_test_report(self, tester_results: Dict[str, List[TestResult]]) -> None:
-        """Отображает отчет о тестировании в консоли с помощью rich."""
+        """
+        Отображает отчет о тестировании в консоли с помощью rich.
+
+        Args:
+            tester_results (Dict[str, List[TestResult]]): Результаты тестов для каждого тестера.
+        """
         for tester_name, results in tester_results.items():
             console.print(Panel.fit(f"[bold magenta]{tester_name}[/bold magenta]", style="bold blue"))
             table = Table(show_header=True, header_style="bold yellow", box=box.MINIMAL_DOUBLE_HEAD)
@@ -757,7 +1130,13 @@ class TestManager:
         console.print(Panel(summary, title="Сводка", style="bold cyan"))
 
     def run_tests_directly(self) -> None:
-        """Запускает тесты без ожидания ввода горячих клавиш."""
+        """
+        Запускает тесты без ожидания ввода горячих клавиш.
+
+        Выполняет инициализацию тестеров, отображает выбранные тесты,
+        показывает сводку, подтверждает запуск тестов, запрашивает количество итераций,
+        запускает тесты, генерирует отчеты и отображает результаты.
+        """
         if not self.selected_testers:
             console.print("[yellow]Нет выбранных тестов для запуска.[/yellow]")
             self.logger.info("Попытка запуска тестов без выбранных тестеров")
@@ -782,13 +1161,24 @@ class TestManager:
         # Запрос на количество итераций
         while True:
             try:
-                iterations = int(
-                    Prompt.ask(f"\n[bold blue]Введите количество повторений [{MIN_ITERATIONS}-{MAX_ITERATIONS}]:[/bold blue]")
-                )
+                iterations_input = Prompt.ask(f"\n[bold blue]Введите количество повторений [{MIN_ITERATIONS}-{MAX_ITERATIONS}]:[/bold blue]")
+                # Обработка горячих клавиш во время ввода
+                if iterations_input.lower() == 'h':
+                    self.show_help()
+                    continue
+                elif iterations_input.lower() == 'q':
+                    self.quit_program()
+                iterations = int(iterations_input)
                 if MIN_ITERATIONS <= iterations <= MAX_ITERATIONS:
                     break
                 console.print(f"[red]Значение должно быть между {MIN_ITERATIONS} и {MAX_ITERATIONS}.[/red]")
             except ValueError:
+                # Проверка на специальные команды
+                if iterations_input.lower() == 'h':
+                    self.show_help()
+                    continue
+                elif iterations_input.lower() == 'q':
+                    self.quit_program()
                 console.print("[red]Введите корректное целое число.[/red]")
 
         # Запуск тестов
@@ -805,10 +1195,15 @@ class TestManager:
         if not Confirm.ask("Хотите запустить другие тесты?"):
             self.running = False
             self.logger.info("Пользователь завершил работу с тестами")
-            sys.exit(0)
+            self.quit_program()
 
     def run(self) -> None:
-        """Запускает основную логику тестирования."""
+        """
+        Запускает основную логику тестирования.
+
+        Выводит заголовок, настраивает обработчики сигналов, валидирует тестеры,
+        запускает основной цикл программы с выбором и выполнением тестов.
+        """
         try:
             # Вывод заголовка
             header_panel = Panel(
@@ -816,17 +1211,11 @@ class TestManager:
                     "[bold cyan]Система тестирования QA OpenYard[/bold cyan]",
                     vertical="middle"
                 ),
-                subtitle="[bold yellow]Версия 0.1. Первый релиз[/bold yellow]",
+                subtitle="[bold yellow]Версия 0.1.21[/bold yellow]",
                 style="bold blue",
                 box=box.ROUNDED
             )
             console.print(header_panel)
-
-            # Настройка логгера
-            self.logger = setup_logger(
-                name='main',
-                log_file=str(LOG_DIR / 'test.log')
-            )
 
             # Настройка обработчиков сигналов
             self.setup_signal_handlers()
@@ -838,7 +1227,7 @@ class TestManager:
                 )
                 sys.exit(1)
 
-            # Основной цикл программы
+            # Оснвной цикл программы
             while self.running:
                 # Показываем справку
                 self.show_help()
@@ -856,21 +1245,33 @@ class TestManager:
         except KeyboardInterrupt:
             console.print("\n[yellow]Прервано пользователем.[/yellow]")
             self.logger.warning("Прервано пользователем через KeyboardInterrupt")
+            self.quit_program()
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Критическая ошибка: {e}")
                 self.logger.debug(traceback.format_exc())
             console.print(f"[red]Критическая ошибка: {e}[/red]")
+            self.quit_program()
         finally:
-            if self.logger:
-                self.logger.info("Завершение тестирования")
-
             console.print("\nНажмите Enter для выхода...")
             input()
 
     def setup_signal_handlers(self) -> None:
-        """Настраивает обработчики сигналов."""
+        """
+        Настраивает обработчики сигналов.
+
+        Обработчики сигналов SIGINT и SIGTERM обеспечивают корректное завершение программы
+        и восстановление настроек перед выходом.
+        """
+
         def signal_handler(signum: int, frame: Any) -> None:
+            """
+            Обработчик сигналов завершения.
+
+            Args:
+                signum (int): Номер сигнала.
+                frame (Any): Текущий стек вызовов.
+            """
             self.logger.warning("Получен сигнал завершения")
             console.print("\n[yellow]Завершение работы...[/yellow]")
             sys.exit(0)
@@ -878,8 +1279,20 @@ class TestManager:
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
+    def quit_program(self) -> None:
+        """
+        Корректно завершает программу.
+        """
+        self.logger.info("Завершение программы по запросу пользователя")
+        console.print("\n[yellow]Работа программы завершена[/yellow]")
+        sys.exit(0)
+
 def main() -> None:
-    """Основная функция программы."""
+    """
+    Основная функция программы.
+
+    Создает экземпляр TestManager и запускает его.
+    """
     manager = TestManager()
     manager.run()
 

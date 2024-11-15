@@ -7,7 +7,12 @@ from typing import Dict, Any, Optional, List, cast
 from typing_extensions import TypedDict
 from datetime import datetime
 from logger import setup_test_logger
-from network_utils import wait_for_port, NetworkError
+from network_utils import (
+    wait_for_port,
+    DEFAULT_IPMI_PORT,
+    DEFAULT_REDFISH_PORT,
+    NetworkError
+)
 
 
 class TestResult(TypedDict):
@@ -37,7 +42,7 @@ class BaseTester:
             logger: Логгер для вывода сообщений
 
         Raises:
-            ConfigError: При ошибке инициализации конфигурации
+            ConfigError: Пи ошибке инициализации конфигурации
             NetworkError: При ошибке инициализации сетевых компонентов
         """
         self.config_file = config_file
@@ -82,7 +87,7 @@ class BaseTester:
             self.original_settings: Dict[str, Any] = {}
 
             # Проверяем доступность хоста
-            if not self._verify_host_access():
+            if not self._verify_host_access(self.ipmi_host):
                 raise NetworkError(f"Хост {self.ipmi_host} недоступен")
 
         except ConfigError as e:
@@ -133,19 +138,7 @@ class BaseTester:
         command: List[str],
         timeout: Optional[int] = None
     ) -> subprocess.CompletedProcess:
-        """
-        Выполняет команду с обработкой ошибок.
-
-        Args:
-            command: Команда для выполнения
-            timeout: Таймаут выполнения
-
-        Returns:
-            subprocess.CompletedProcess: Результат выполнения
-
-        Raises:
-            RuntimeError: При ошибке выполнения команды
-        """
+        """Выполняет команду с обработкой ошибок."""
         try:
             result = subprocess.run(
                 command,
@@ -156,9 +149,11 @@ class BaseTester:
             )
 
             if result.returncode != 0:
-                raise RuntimeError(
-                    f"Command failed with code {result.returncode}: {result.stderr}"
+                error_msg = (
+                    f"Command failed with code {result.returncode}: "
+                    f"{result.stderr}"
                 )
+                raise RuntimeError(error_msg)
 
             return result
 
@@ -167,63 +162,39 @@ class BaseTester:
         except Exception as e:
             raise RuntimeError(f"Error executing command: {e}")
 
-    def _verify_host_access(self) -> bool:
-        """
-        Проверяет доступность хоста.
-
-        Returns:
-            bool: True если хост доступен
-        """
+    def _verify_host_access(self, host: str) -> bool:
+        """Проверяет доступность хоста."""
         try:
-            # Проверяем доступность по ICMP
-            if not wait_for_port(self.ipmi_host, 22, timeout=self.verify_timeout):
-                self.logger.error(f"IP {self.ipmi_host} недоступен")
-                return False
-
-            # Проверяем доступность по SSH
-            if not wait_for_port(self.ipmi_host, 22, timeout=self.verify_timeout):
-                self.logger.error(f"SSH порт недоступен на {self.ipmi_host}")
-                return False
-
             # Проверяем доступность по IPMI
             if not wait_for_port(
-                self.ipmi_host,
-                623,
-                timeout=self.verify_timeout
+                host,
+                DEFAULT_IPMI_PORT,
+                self.verify_timeout
             ):
-                self.logger.error(f"IPMI порт недоступен на {self.ipmi_host}")
+                self.logger.error(f"IPMI порт недоступен на {host}")
                 return False
 
+            # Проверяем доступность по Redfish
+            if not wait_for_port(
+                host,
+                DEFAULT_REDFISH_PORT,
+                self.verify_timeout
+            ):
+                self.logger.error(f"Redfish порт недоступен на {host}")
+                return False
+
+            self.logger.debug(f"IPMI и Redfish порты доступны на {host}")
             return True
 
         except Exception as e:
-            self.logger.error(
-                f"Ошибка при проверке доступности {self.ipmi_host}: {e}"
-            )
+            self.logger.error(f"Ошибка при проверке доступности {host}: {e}")
             return False
 
     def update_bmc_ip(self, new_ip: str) -> None:
-        """
-        Обновляет IP-адрес BMC во всех тестерах.
-
-        Args:
-            new_ip: Новый IP-адрес BMC
-
-        Raises:
-            NetworkError: При ошибке обновления IP
-        """
-        try:
-            self.logger.info(
-                f"Обновление IP BMC: {self.ipmi_host} -> {new_ip}"
-            )
-            self.ipmi_host = new_ip
-            self.config_manager.update_bmc_ip(new_ip)
-        except Exception as e:
-            self.logger.error(
-                f"Ошибка при обновлении IP BMC: {e}",
-                exc_info=True
-            )
-            raise NetworkError(f"Ошибка при обновлении IP BMC: {e}")
+        """Обновляет IP адрес BMC для IPMI/Redfish."""
+        self.logger.info(f"Обновление IP BMC: {self.ipmi_host} -> {new_ip}")
+        self.ipmi_host = new_ip
+        self.config_manager.update_bmc_ip(new_ip)
 
     def safe_restore_settings(self) -> bool:
         """
@@ -275,7 +246,7 @@ class BaseTester:
         Выполняет тестирование.
 
         Raises:
-            NotImplementedError: Если метод не реализован в подклассе
+            NotImplementedError: Если метод не реализоан в подклассе
         """
         raise NotImplementedError(
             "Метод perform_tests должен быть реализован в подклассе"

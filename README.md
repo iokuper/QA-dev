@@ -1,7 +1,7 @@
-# QA OpenYard - Система тестирования BMC
+# QA - Система тестирования BMC
 
 ## Описание
-QA OpenYard - это комплексная система автоматизированного тестирования для Baseboard Management Controller (BMC). Система предоставляет широкий набор тестов для проверки сетевых настроек, протоколов управления и сервисов BMC с возможностью генерации подробных отчетов.
+QA - это комплексная система автоматизированного тестирования для Baseboard Management Controller (BMC). Система предоставляет широкий набор тестов для проверки сетевых настроек, протоколов управления и сервисов BMC с возможностью генерации подробных отчетов.
 
 ## Основные возможности
 
@@ -60,12 +60,6 @@ black>=21.5b2
 ```
 
 ## Установка
-
-### Из репозитория
-```bash
-# Клонирование репозитория
-git clone https://github.com/your-repo/qa-openyard.git
-cd qa-openyard
 
 # Создание виртуального окружения
 python -m venv venv
@@ -135,12 +129,6 @@ verify_access = true
 # Запуск всех тестов
 python main.py
 
-# Запуск конкретной категории тестов
-python main.py --category network
-
-# Запуск отдельного теста
-python main.py --test ipmi
-```
 
 ### Интерактивный режим
 Система предоставляет интерактивный CLI интерфейс с следующими возможностями:
@@ -224,40 +212,6 @@ TESTER_CLASSES['NewTest'] = {
 }
 ```
 
-## Тестирование
-
-### Unit тесты
-```bash
-# Запуск всех тестов
-python -m pytest tests/
-
-# Запуск конкретного модуля
-python -m pytest tests/test_network.py
-
-# С покрытием кода
-python -m pytest --cov=. tests/
-```
-
-### Интеграционные тесты
-```bash
-python -m pytest tests/integration/
-```
-
-### Тесты производительности
-```bash
-python -m pytest tests/performance/
-```
-
-## CI/CD
-
-### GitHub Actions
-- Линтинг кода
-- Проверка типов
-- Unit тесты
-- Интеграционные тесты
-- Сборка документации
-- Публикация пакета
-
 ### Pre-commit хуки
 - black
 - flake8
@@ -294,17 +248,3 @@ python -m pytest tests/performance/
 - Проверяйте SSL сертификаты
 - Используйте безопасные протоколы
 - Ограничивайте сетевой доступ
-
-## Лицензия
-MIT License. См. файл LICENSE для деталей.
-
-## Авторы
-- OpenYard Team
-
-## Поддержка
-- GitHub Issues: https://github.com/your-repo/qa-openyard/issues
-- Email: support@openyard.com
-- Documentation: https://docs.openyard.com
-
-## Участие в разработке
-Мы приветствуем вклад в развитие проекта! См. CONTRIBUTING.md для деталей.

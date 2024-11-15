@@ -141,55 +141,36 @@ class CompressedRotatingFileHandler(logging.handlers.RotatingFileHandler):
             self.rotator(source, dest)
 
 
-def setup_logger(
-    name: str,
-    log_file: Union[str, Path],
-    level: int = logging.DEBUG,
-    console_output: bool = True,
-    use_colors: bool = True,
-    max_bytes: int = 10 * 1024 * 1024,  # 10 MB
-    backup_count: int = 5
-) -> logging.Logger:
-    """
-    Настраивает логгер.
-
-    Args:
-        name: Имя логгера
-        log_file: Путь к файлу лога
-        level: Уровень логирования
-        console_output: Выводить ли в консоль
-        use_colors: Использовать ли цветной вывод
-        max_bytes: Максимальный размер файла
-        backup_count: Количество резервных копий
-
-    Returns:
-        logging.Logger: Настроенный логгер
-    """
+def setup_logger(name: str, log_file: str) -> logging.Logger:
+    """Настраивает и возвращает логгер."""
     logger = logging.getLogger(name)
-    logger.setLevel(level)
+    logger.setLevel(logging.DEBUG)
 
-    # Создаем директорию для логов если нужно
-    log_path = Path(log_file)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Настраиваем форматтер
-    formatter = CustomFormatter(use_colors=use_colors)
-
-    # Добавляем обработчик файла
-    file_handler = CompressedRotatingFileHandler(
-        log_path,
-        maxBytes=max_bytes,
-        backupCount=backup_count,
-        encoding='utf-8'
+    # Форматтер для файла (с полной информацией)
+    file_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(module)s:%(lineno)d - '
+        '%(funcName)s - %(message)s'
     )
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
 
-    # Добавляем обработчик консоли если нужно
-    if console_output:
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
+    # Форматтер для консоли (только сообщение)
+    console_formatter = logging.Formatter('%(message)s')
+
+    # Обработчик для файла
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(file_formatter)
+
+    # Обработчик для консоли
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(console_formatter)
+
+    # Очищаем существующие обработчики
+    logger.handlers.clear()
+
+    # Добавляем обработчики
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
 
     return logger
 

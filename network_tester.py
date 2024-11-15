@@ -2,10 +2,10 @@
 
 import logging
 import time
-from typing import Dict, Any, Optional, List, cast
+from typing import Dict, Any, Optional, cast
 from base_tester import BaseTester
-from verification_utils import verify_ip_format, ping_ip, verify_settings
-from network_utils import SSHManager, RedfishManager, wait_for_port
+from verification_utils import verify_settings
+from network_utils import SSHManager, verify_network_access
 
 
 class NetworkTester(BaseTester):
@@ -29,9 +29,16 @@ class NetworkTester(BaseTester):
         network_config = self.config_manager.get_network_config('Network')
         self.interface = cast(str, network_config.get('interface', '1'))
 
-        # Инициализация SSH и Redfish менеджеров
+        # Провеяем доступность хоста
+        if not verify_network_access(
+            ip=self.ipmi_host,
+            ports=[623, 443],
+            logger=self.logger
+        ):
+            raise RuntimeError(f"Хост {self.ipmi_host} недоступен")
+
+        # Инициализация SSH менеджера
         self.ssh_tester = SSHManager(config_file, logger)
-        self.redfish_tester = RedfishManager(config_file, logger)
 
         # Таймауты и повторы
         self.setup_timeout = int(network_config.get('setup_timeout', '30'))
@@ -67,12 +74,7 @@ class NetworkTester(BaseTester):
         self.logger.debug("Инициализация Network тестера завершена")
 
     def get_current_settings(self) -> Dict[str, Any]:
-        """
-        Получает текущие сетевые настройки.
-
-        Returns:
-            Dict[str, Any]: Текущие настройки
-        """
+        """Получает текущие сетевые настройки."""
         try:
             command = [
                 "ipmitool", "-I", "lanplus",
@@ -88,261 +90,420 @@ class NetworkTester(BaseTester):
                     key, value = [x.strip() for x in line.split(':', 1)]
                     settings[key] = value
             return settings
-
         except Exception as e:
-            self.logger.error(f"Ошибка при получении настроек: {e}")
+            self.logger.error(f"Ошибка пи получении настроек: {e}")
             return {}
 
     def setup_static_ip(self, ip: str, mask: str, gateway: str) -> bool:
-        """
-        Настравает статический IP.
-
-        Args:
-            ip: IP-адрес для настройки
-            mask: Маска подсети
-            gateway: Шлюз
-
-        Returns:
-            bool: True если настройка успешна
-        """
+        """Устанавливает статический IP-адрес."""
         try:
-            # Проверяем корректность параметров
-            if not all(verify_ip_format(addr) for addr in [ip, gateway]):
-                raise ValueError("Некорректный формат IP-адреса")
-
-            # Подключаемся по SSH к Ubuntu
-            if not self.ssh_tester.connect():
-                raise RuntimeError("Не удалось установить SSH соединение")
-
-            # Отключаем DHCP
-            command = [
-                "ipmitool", "-I", "lanplus",
-                "-H", cast(str, self.ipmi_host),
-                "-U", self.ipmi_username,
-                "-P", self.ipmi_password,
-                "lan", "set", self.interface, "ipsrc", "static"
-            ]
-            self._run_command(command)
-
-            # Ждем применения настроек и получаем новый IP
-            max_attempts = 30
+            self.logger.info(
+                f"Применение статических параметров: IP-адрес: {ip}, "
+                f"Маска: {mask}, Шлюз: {gateway}"
+            )
             current_ip = None
 
-            for attempt in range(max_attempts):
-                # Проверяем статус настроек через SSH
-                result = self.ssh_tester.execute_command("ipmitool lan print 1")
-                if not result['success']:
-                    raise RuntimeError("Не удалось получить статус настроек")
+            # Подключаемся к Ubuntu для мониторинга изменений
+            if not self.ssh_tester.connect():
+                raise RuntimeError("Не удалось подключиться к Ubuntu по SSH")
 
-                settings = {}
-                for line in result['output'].splitlines():
-                    if 'Set in Progress' in line:
-                        settings['set_progress'] = line.split(':')[1].strip()
-                    elif 'IP Address Source' in line:
-                        settings['ip_source'] = line.split(':')[1].strip()
-                    elif 'IP Address' in line:
-                        settings['ip_address'] = line.split(':')[1].strip()
+            try:
+                # Получаем текущие настройки через SSH
+                settings = verify_settings(self.ssh_tester, self.interface)
+                current_ip = settings.get('IP Address')
 
-                # Проверяем условия
-                if (settings.get('set_progress') == 'Set Complete' and
-                    settings.get('ip_source') == 'Static Address' and
-                    settings.get('ip_address') != '0.0.0.0'):
-                    current_ip = settings['ip_address']
-                    break
+                if not current_ip:
+                    raise RuntimeError("Не удалось получить текущий IP")
 
-                time.sleep(1)
+                if current_ip == ip:
+                    self.logger.warning(
+                        f"Попытка установить текущий IP {ip}. "
+                        "Пропускаем изменение IP"
+                    )
+                    return True
 
-            if not current_ip:
-                raise RuntimeError("Не удалось получить новый IP после отключения DHCP")
+                # Отключаем DHCP через IPMI
+                command = [
+                    "ipmitool", "-I", "lanplus",
+                    "-H", cast(str, self.ipmi_host),
+                    "-U", self.ipmi_username,
+                    "-P", self.ipmi_password,
+                    "lan", "set", self.interface, "ipsrc", "static"
+                ]
+                self._run_command(command)
 
-            # Обновляем IP в конфигурации
-            self.update_bmc_ip(current_ip)
+                # Ждем и проверяем через SSH, что DHCP отключился
+                self.logger.debug(
+                    "Ожидание применения настроек после отключения DHCP"
+                )
 
-            # Устанавливаем статический IP
-            command = [
-                "ipmitool", "-I", "lanplus",
-                "-H", current_ip,
-                "-U", self.ipmi_username,
-                "-P", self.ipmi_password,
-                "lan", "set", self.interface, "ipaddr", ip
-            ]
-            self._run_command(command)
-            time.sleep(2)
+                time.sleep(10)
+                for attempt in range(10):
+                    settings = verify_settings(self.ssh_tester, self.interface)
+                    if (settings['Set in Progress'] == 'Set Complete' and
+                            settings['IP Address Source'] == 'Static Address'):
+                        current_ip = settings['IP Address']
+                        self.logger.info(
+                            f"DHCP отключен, текущий IP: {current_ip}"
+                        )
+                        break
+                    time.sleep(self.retry_delay)
+                else:
+                    raise RuntimeError("Не удалось отключить DHCP")
 
-            # Обновляем IP в конфигурации
-            self.update_bmc_ip(ip)
+                # Обновляем IP в конфигурации
+                self.update_bmc_ip(current_ip)
 
-            # Устанавливаем маску подсети
-            command = [
-                "ipmitool", "-I", "lanplus",
-                "-H", ip,
-                "-U", self.ipmi_username,
-                "-P", self.ipmi_password,
-                "lan", "set", self.interface, "netmask", mask
-            ]
-            self._run_command(command)
-            time.sleep(2)
+                # Устанавливаем IP адрес
+                self.logger.debug(f"Установка IP адреса: {ip}")
+                command = [
+                    "ipmitool", "-I", "lanplus",
+                    "-H", current_ip,
+                    "-U", self.ipmi_username,
+                    "-P", self.ipmi_password,
+                    "lan", "set", self.interface, "ipaddr", ip
+                ]
+                self._run_command(command)
 
-            # Устанавливаем шлюз
-            command = [
-                "ipmitool", "-I", "lanplus",
-                "-H", ip,
-                "-U", self.ipmi_username,
-                "-P", self.ipmi_password,
-                "lan", "set", self.interface, "defgw", "ipaddr", gateway
-            ]
-            self._run_command(command)
-            time.sleep(5)
+                # Ждем применения IP
+                time.sleep(10)
+                self.logger.debug("Ожидание применения IP адреса...")
+                for attempt in range(10):
+                    settings = verify_settings(self.ssh_tester, self.interface)
+                    if (settings['Set in Progress'] == 'Set Complete' and
+                            settings['IP Address'] == ip):
+                        self.logger.info(f"IP адрес {ip} успешно применен")
+                        current_ip = ip
+                        self.update_bmc_ip(current_ip)
+                        break
+                    time.sleep(self.retry_delay)
+                else:
+                    raise RuntimeError("Не удало применить IP адрес")
 
-            # Проверяем настройки
-            settings = self.get_current_settings()
-            if not verify_settings(settings, {
-                'IP Address': ip,
-                'Subnet Mask': mask,
-                'Default Gateway IP': gateway,
-                'IP Address Source': 'Static'
-            }, self.logger):
-                raise RuntimeError("Настройки не применились")
+                # Устанавливаем маску подсети
+                self.logger.info(f"Установка маски подсети: {mask}")
+                command = [
+                    "ipmitool", "-I", "lanplus",
+                    "-H", ip,
+                    "-U", self.ipmi_username,
+                    "-P", self.ipmi_password,
+                    "lan", "set", self.interface, "netmask", mask
+                ]
+                self._run_command(command)
 
-            return True
+                time.sleep(10)
+                self.logger.debug("Ожидание применения маски...")
+                for attempt in range(10):
+                    settings = verify_settings(self.ssh_tester, self.interface)
+                    if (settings['Set in Progress'] == 'Set Complete' and
+                            settings['Subnet Mask'] == mask):
+                        self.logger.info(f"Маска {mask} успешно применена")
+                        break
+                    time.sleep(self.retry_delay)
+                else:
+                    raise RuntimeError("Не удало применить маску")
+
+                # Устанавливаем шлюз
+                self.logger.info(f"Установка шлюза: {gateway}")
+                command = [
+                    "ipmitool", "-I", "lanplus",
+                    "-H", ip,
+                    "-U", self.ipmi_username,
+                    "-P", self.ipmi_password,
+                    "lan", "set", self.interface, "defgw", "ipaddr", gateway
+                ]
+                self._run_command(command)
+
+                time.sleep(10)
+                self.logger.debug("Ожидание применения шлюза...")
+                for attempt in range(10):
+                    settings = verify_settings(self.ssh_tester, self.interface)
+                    if (settings['Set in Progress'] == 'Set Complete' and
+                            settings['Default Gateway IP'] == gateway):
+                        self.logger.info(f"Шлюз {gateway} успешно применен")
+                        break
+                    time.sleep(self.retry_delay)
+                else:
+                    raise RuntimeError("Не удало применить шлюз")
+
+                # Проверяем финальное применение настроек
+                self.logger.debug("Проверка применения настроек...")
+                for attempt in range(10):  # Увеличиваем количество попыток
+                    settings = verify_settings(self.ssh_tester, self.interface)
+                    self.logger.debug(
+                        f"Попытка {attempt + 1}: "
+                        f"IP={settings.get('IP Address')}, "
+                        f"Source={settings.get('IP Address Source')}, "
+                        f"Mask={settings.get('Subnet Mask')}, "
+                        f"Gateway={settings.get('Default Gateway IP')}, "
+                        f"Progress={settings.get('Set in Progress')}"
+                    )
+                    if (settings['Set in Progress'] == 'Set Complete' and
+                            settings['IP Address'] == ip and
+                            settings['IP Address Source'] == 'Static Address' and
+                            settings['Subnet Mask'] == mask and
+                            settings['Default Gateway IP'] == gateway):
+                        self.logger.info(f"Новый IP {ip} успешно установлен")
+                        self.update_bmc_ip(ip)
+                        return True
+                    time.sleep(5)
+
+                # Если настройки не применились, логируем текущие знчения
+                self.logger.error(
+                    "Не удалось применить новые настройки. "
+                    f"Текущие значения: {settings}"
+                )
+                return False
+
+            finally:
+                self.ssh_tester.disconnect()
 
         except Exception as e:
             self.logger.error(f"Ошибка при настройке статического IP: {e}")
             return False
+
+    def _wait_for_static_ip(self, max_attempts: int = 10) -> Optional[str]:
+        """
+        Ожидает олучения статического IP после отключения DHCP.
+
+        Args:
+            max_attempts: Максимальное количество попыток
+
+        Returns:
+            Optional[str]: Полученный IP или None при ошибке
+        """
+        # Подключаемся к Ubuntu по SSH
+        if not self.ssh_tester.connect():
+            self.logger.error("Не удалось подключиться к Ubuntu по SSH")
+            return None
+
+        try:
+            for attempt in range(max_attempts):
+                try:
+                    # Получаем настройки через SSH на Ubuntu
+                    settings = verify_settings(self.ssh_tester, self.interface)
+
+                    if (settings['Set in Progress'] == 'Set Complete' and
+                        settings['IP Address Source'] == 'Static Address'):
+                        current_ip = settings['IP Address']
+                        self.logger.info(
+                            "Получен текущий IP после отключения DHCP: "
+                            f"{current_ip}"
+                        )
+                        return current_ip
+
+                except Exception as e:
+                    self.logger.debug(f"Попытка {attempt + 1}: {e}")
+
+                time.sleep(self.retry_delay)
+
+            return None
+
         finally:
             self.ssh_tester.disconnect()
 
-    def setup_dhcp(self) -> bool:
-        """
-        Настраивает получение IP через DHCP.
-
-        Returns:
-            bool: True если настройка успешна
-        """
+    def _verify_static_ip_settings(
+        self,
+        expected_ip: str,
+        max_attempts: int = 10
+    ) -> bool:
+        """Проверяет применение настроек статического IP."""
         try:
-            # Подключаемся по SSH к Ubuntu
-            if not self.ssh_tester.connect():
-                raise RuntimeError("Не удалось установить SSH соединеие")
+            for attempt in range(max_attempts):
+                settings = verify_settings(self.ssh_tester, self.interface)
+                if (settings['Set in Progress'] == 'Set Complete' and
+                        settings['IP Address'] == expected_ip):
+                    self.logger.info(
+                        f"Верификация успешна: текущий IP {expected_ip}"
+                    )
+                    return True
+                time.sleep(self.retry_delay)
+            return False
 
-            # Включаем DHCP
+        except Exception as e:
+            self.logger.debug(
+                f"Попытка верификации {attempt + 1}: {e}"
+            )
+            return False
+
+    def setup_dhcp(self) -> bool:
+        """Включает DHCP."""
+        try:
+            self.logger.debug("Включение DHCP...")
+            # Включаем DHCP через IPMI
             command = [
                 "ipmitool", "-I", "lanplus",
                 "-H", cast(str, self.ipmi_host),
                 "-U", self.ipmi_username,
                 "-P", self.ipmi_password,
-                "lan", "set", self.interface,
-                "ipsrc", "dhcp"
+                "lan", "set", self.interface, "ipsrc", "dhcp"
             ]
             self._run_command(command)
 
-            # Ждем применения настроек и получаем новый IP
-            max_attempts = 30
-            current_ip = None
+            # Ждем применения настроек DHCP
+            time.sleep(10)
+            self.logger.debug("Проверка применения настроек...")
 
-            for attempt in range(max_attempts):
-                # Проверяем статус настроек через SSH
-                result = self.ssh_tester.execute_command("ipmitool lan print 1")
-                if not result['success']:
-                    raise RuntimeError("Не удалось получить статус настроек")
+            for attempt in range(10):
+                try:
+                    settings = verify_settings(self.ssh_tester, self.interface)
+                    self.logger.debug(
+                        f"Попытка {attempt + 1}: "
+                        f"Source={settings.get('IP Address Source')}, "
+                        f"IP={settings.get('IP Address')}, "
+                        f"Progress={settings.get('Set in Progress')}"
+                    )
 
-                settings = {}
-                for line in result['output'].splitlines():
-                    if 'Set in Progress' in line:
-                        settings['set_progress'] = line.split(':')[1].strip()
-                    elif 'IP Address Source' in line:
-                        settings['ip_source'] = line.split(':')[1].strip()
-                    elif 'IP Address' in line:
-                        settings['ip_address'] = line.split(':')[1].strip()
+                    if settings['Set in Progress'] == 'Set Complete':
+                        if settings['IP Address Source'] == 'DHCP Address':
+                            # Ждем получения IP и шлюза
+                            if (settings['IP Address'] != '0.0.0.0' and
+                                    settings['Default Gateway IP'] != '0.0.0.0'):
+                                new_ip = settings['IP Address']
+                                self.logger.info(
+                                    f"DHCP включен, получен IP: {new_ip}"
+                                )
+                                self.update_bmc_ip(new_ip)
+                                return True
+                except Exception as e:
+                    self.logger.debug(
+                        f"Ошибка проверки (попытка {attempt + 1}): {e}"
+                    )
 
-                # Проверяем условия
-                if (settings.get('set_progress') == 'Set Complete' and
-                    settings.get('ip_source') == 'DHCP Address' and
-                    settings.get('ip_address') != '0.0.0.0'):
-                    current_ip = settings['ip_address']
-                    break
+                time.sleep(5)  # Уменьшаем задержку между попытками
 
-                time.sleep(1)
-
-            if not current_ip:
-                raise RuntimeError("Не удалось получить новый IP после включения DHCP")
-
-            # Обновляем IP в конфигурации
-            self.update_bmc_ip(current_ip)
-
-            # Проверяем настройки
-            settings = self.get_current_settings()
-            if not settings:
-                raise RuntimeError("Не удалось получить настройки")
-
-            if settings.get('IP Address Source') != 'DHCP':
-                raise RuntimeError("DHCP не включился")
-
-            # Проверяем доступность если требуется
-            if self.verify_access:
-                if not self.verify_network_access(current_ip):
-                    raise RuntimeError("DHCP включен, но сеть недоступна")
-
-            return True
+            self.logger.error("Не удалось включить DHCP")
+            return False
 
         except Exception as e:
             self.logger.error(f"Ошибка при настройке DHCP: {e}")
             return False
-        finally:
-            self.ssh_tester.disconnect()
 
     def test_invalid_settings(self) -> bool:
-        """
-        Тестирует установку некорректны�� настроек.
-
-        Returns:
-            bool: True если тест прошел успешно
-        """
+        """Тестирует установку некорректных настроек."""
         try:
-            # Сохраняем текущие настройки
-            original_settings = self.get_current_settings()
+            # Подключаемся к Ubuntu для мониторинга
+            if not self.ssh_tester.connect():
+                raise RuntimeError("SSH соединение не установлено")
 
-            # Тестируем некорректные IP
-            invalid_ips = [
-                '256.256.256.256',  # Некорректный IP
-                '0.0.0.0',  # Нулевой IP
-                'invalid.ip',  # Некорректный формат
-                '192.168.1',  # Неполный IP
-                '300.300.300.300'  # IP вне диапазона
-            ]
+            try:
+                # Сохраняем текущие настройки
+                original_settings = self.get_current_settings()
+                if not original_settings:
+                    raise RuntimeError("Не удалось получить текущие настройки")
 
-            for invalid_ip in invalid_ips:
-                try:
-                    command = [
-                        "ipmitool", "-I", "lanplus",
-                        "-H", cast(str, self.ipmi_host),
-                        "-U", self.ipmi_username,
-                        "-P", self.ipmi_password,
-                        "lan", "set", self.interface,
-                        "ipaddr", invalid_ip
-                    ]
-                    self._run_command(command)
-                    self.logger.error(
-                        f"Некорректный IP {invalid_ip} был принят"
-                    )
-                    return False
-                except Exception:
-                    self.logger.info(
-                        f"Некорректный IP {invalid_ip} был отклонен"
-                    )
-
-            # Проверяем, что настройки не изменились
-            current_settings = self.get_current_settings()
-            if not verify_settings(
-                current_settings,
-                original_settings,
-                self.logger
-            ):
-                self.logger.error(
-                    "Настройки изменились после тестов некорректных значений"
+                # Получаем параметры для тестирования
+                test_params = self.config_manager.get_network_params(
+                    'Network',
+                    self.ipmi_host
                 )
-                return False
 
-            return True
+                # Проверяем некорректные IP
+                for invalid_ip in test_params.get('invalid_ips', []):
+                    if not invalid_ip:  # Пропускаем путые значения
+                        continue
+                    try:
+                        command = [
+                            "ipmitool", "-I", "lanplus",
+                            "-H", cast(str, self.ipmi_host),
+                            "-U", self.ipmi_username,
+                            "-P", self.ipmi_password,
+                            "lan", "set", self.interface,
+                            "ipaddr", invalid_ip.strip()
+                        ]
+                        self._run_command(command)
+
+                        # Проверяем через SSH что IP не изменился
+                        settings = verify_settings(
+                            self.ssh_tester,
+                            self.interface
+                        )
+                        if (settings['IP Address'] !=
+                                original_settings['IP Address']):
+                            self.logger.error(
+                                f"Некорректный IP {invalid_ip} был применен!"
+                            )
+                            return False
+                        self.logger.info(
+                            f"Некорректный IP {invalid_ip} был отклонен"
+                        )
+                    except Exception:
+                        self.logger.info(
+                            f"Некорректный IP {invalid_ip} был отклонен"
+                        )
+
+                # Проверяем некорректные маски
+                for invalid_mask in test_params.get('invalid_masks', []):
+                    if not invalid_mask:
+                        continue
+                    try:
+                        command = [
+                            "ipmitool", "-I", "lanplus",
+                            "-H", cast(str, self.ipmi_host),
+                            "-U", self.ipmi_username,
+                            "-P", self.ipmi_password,
+                            "lan", "set", self.interface,
+                            "netmask", invalid_mask
+                        ]
+                        self._run_command(command)
+
+                        # Проверяем через SSH что маска не изменилась
+                        settings = verify_settings(
+                            self.ssh_tester,
+                            self.interface
+                        )
+                        if (settings['Subnet Mask'] !=
+                                original_settings['Subnet Mask']):
+                            self.logger.error(
+                                f"Некорректная маска {invalid_mask} была применена!"
+                            )
+                            return False
+                        self.logger.info(
+                            f"Некорректная маска {invalid_mask} была отклонена"
+                        )
+                    except Exception:
+                        self.logger.info(
+                            f"Некорректная маска {invalid_mask} была отклонена"
+                        )
+
+                # Проверяем некорректные шлюзы
+                for invalid_gateway in test_params.get('invalid_gateways', []):
+                    if not invalid_gateway:
+                        continue
+                    try:
+                        command = [
+                            "ipmitool", "-I", "lanplus",
+                            "-H", cast(str, self.ipmi_host),
+                            "-U", self.ipmi_username,
+                            "-P", self.ipmi_password,
+                            "lan", "set", self.interface,
+                            "defgw", "ipaddr", invalid_gateway
+                        ]
+                        self._run_command(command)
+
+                        # Проверяем через SSH что шлюз не изменился
+                        settings = verify_settings(
+                            self.ssh_tester,
+                            self.interface
+                        )
+                        if (settings['Default Gateway IP'] !=
+                                original_settings['Default Gateway IP']):
+                            self.logger.error(
+                                f"Некорректный шлюз {invalid_gateway} был применен!"
+                            )
+                            return False
+                        self.logger.info(
+                            f"Некорректный шлюз {invalid_gateway} был отклонен"
+                        )
+                    except Exception:
+                        self.logger.info(
+                            f"Некорректный шлюз {invalid_gateway} был отклонен"
+                        )
+
+                return True
+
+            finally:
+                self.ssh_tester.disconnect()
 
         except Exception as e:
             self.logger.error(
@@ -355,40 +516,84 @@ class NetworkTester(BaseTester):
         try:
             self.logger.info("Начало тестирования сетевых настроек")
 
-            # Сохраняем текущие настройки
+            # 1. Сохраняем текущие настройки
             if self.backup_settings:
                 self.original_settings = self.get_current_settings()
+                if not self.original_settings:
+                    raise RuntimeError("Не удалось получить текущие настройки")
+                self.logger.debug(
+                    f"Сохранены текущие настройки: {self.original_settings}"
+                )
 
-            # Получаем тестовые настройки
+            # Определяем начальный режим работы
+            initial_mode = self.original_settings.get('IP Address Source', '')
+            self.logger.info(f"Начальный режим работы: {initial_mode}")
+
+            # Получаем тестовые насройки
             test_settings = self.config_manager.get_network_params(
                 'Network',
-                '75'  # Ипользуем сет 75 для тестов
+                self.ipmi_host
             )
+            self.logger.debug(f"Получены тестовые настройки: {test_settings}")
 
-            # Настройка статического IP
-            if not self.setup_static_ip(
-                test_settings['ips'][0],
-                self.default_subnet_mask,
-                test_settings['gateway']
-            ):
-                raise RuntimeError("Не удалось настроить статический IP")
+            # 2. Тестируем некоррекные настройки если режим Static
+            if initial_mode == 'Static Address':
+                self.logger.info("Тестирование некорректных настроек")
+                if not self.test_invalid_settings():
+                    raise RuntimeError("Тест некорректных настроек не прошел")
 
-            # Тестирование некорректных настроек
-            if not self.test_invalid_settings():
-                raise RuntimeError("Тест некорректных настроек не прошел")
+            # 3. Тестируем переключение режимов
+            if initial_mode == 'DHCP Address':
+                # DHCP -> Static
+                if not self.setup_static_ip(
+                    test_settings['ips'][0],
+                    str(test_settings['subnet_mask']),
+                    str(test_settings['gateway'])
+                ):
+                    raise RuntimeError("Не удалось переключиться на статический IP")
 
-            # Переключение на DHCP
-            if not self.setup_dhcp():
-                raise RuntimeError("Не удалось настроить DHCP")
+                # Тестируем некорректные настройки в статическом режиме
+                self.logger.info("Тестирование некорректных настроек")
+                if not self.test_invalid_settings():
+                    raise RuntimeError("Тест некорректных настроек не прошел")
+
+                # Static -> DHCP
+                if not self.setup_dhcp():
+                    raise RuntimeError("Не удалось вернуться на DHCP")
+
+            else:  # Static Address
+                # Static -> DHCP
+                if not self.setup_dhcp():
+                    raise RuntimeError("Не удалось переключиться на DHCP")
+
+                # DHCP -> Static с тестовыми настройками
+                if not self.setup_static_ip(
+                    test_settings['ips'][0],
+                    str(test_settings['subnet_mask']),
+                    str(test_settings['gateway'])
+                ):
+                    raise RuntimeError("Не удалось применить тестовые настройки")
+
+            # 4. Восстанавливаем исходные настройки
+            if initial_mode == 'DHCP Address':
+                if not self.setup_dhcp():
+                    raise RuntimeError("Не удалось восстановить DHCP")
+            else:  # Static Address
+                if not self.setup_static_ip(
+                    self.original_settings['IP Address'],
+                    self.original_settings['Subnet Mask'],
+                    self.original_settings['Default Gateway IP']
+                ):
+                    raise RuntimeError("Не удалось восстановить статические настройки")
 
             self.add_test_result('Network Configuration Test', True)
             self.add_test_result('Network Accessibility Test', True)
 
         except Exception as e:
-            self.logger.error(f"Ошибка при выполнении тестов: {e}")
+            self.logger.error(f"Ошибка при выполнеии тесто: {e}")
             self.add_test_result('Network Tests', False, str(e))
-        finally:
-            self.safe_restore_settings()
+            if self.backup_settings:
+                self.safe_restore_settings()
 
     def restore_settings(self) -> bool:
         """
@@ -399,11 +604,13 @@ class NetworkTester(BaseTester):
         """
         try:
             if not self.original_settings:
-                self.logger.info("Нет сохраненных настроек для восстановления")
+                self.logger.info("Нет сохраненых настроек для восстановления")
                 return True
 
-            # Восстанавливаем настройки
-            if self.original_settings.get('IP Address Source') == 'DHCP':
+            initial_mode = self.original_settings.get('IP Address Source', '')
+            self.logger.info(f"Восстановление настроек режима: {initial_mode}")
+
+            if initial_mode == 'DHCP Address':
                 return self.setup_dhcp()
             else:
                 return self.setup_static_ip(
@@ -413,37 +620,5 @@ class NetworkTester(BaseTester):
                 )
 
         except Exception as e:
-            self.logger.error(f"Ошибка при восстановлении настроек: {e}")
-            return False
-
-    def verify_network_access(self, ip: str) -> bool:
-        """
-        Проверяет сетевую доступность.
-
-        Args:
-            ip: IP-адрес для проверки
-
-        Returns:
-            bool: True если доступно
-        """
-        try:
-            # Проверяем доступность по ICMP
-            if not wait_for_port(ip, 22, timeout=self.verify_timeout):
-                self.logger.error(f"IP {ip} недоступен")
-                return False
-
-            # Проверяем доступность по SSH
-            if not wait_for_port(ip, 22, timeout=self.verify_timeout):
-                self.logger.error(f"SSH порт недоступен на {ip}")
-                return False
-
-            # Проверяем доступность по IPMI
-            if not wait_for_port(ip, 623, timeout=self.verify_timeout):
-                self.logger.error(f"IPMI порт недоступен на {ip}")
-                return False
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Ошибка при проверке доступности {ip}: {e}")
+            self.logger.error(f"Ошибка при воссановлении настроек: {e}")
             return False

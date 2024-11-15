@@ -5,9 +5,12 @@ import logging
 import platform
 import socket
 import time
-from typing import Optional, Dict, Any, List, cast
+from typing import Optional, Dict, Any, List, cast, TYPE_CHECKING
 from ipaddress import ip_address, IPv4Address
 from network_utils import wait_for_port
+
+if TYPE_CHECKING:
+    from network_utils import SSHManager
 
 
 def verify_ip_format(ip: str, logger: Optional[logging.Logger] = None) -> bool:
@@ -33,55 +36,56 @@ def verify_ip_format(ip: str, logger: Optional[logging.Logger] = None) -> bool:
         return False
 
 
-def verify_settings(
-    actual_settings: Dict[str, Any],
-    expected_settings: Dict[str, Any],
-    logger: Optional[logging.Logger] = None
-) -> bool:
-    """
-    Проверяет соответствие текущих настрок ожидаемым.
+def verify_settings(ssh_manager: 'SSHManager', interface: str) -> Dict[str, str]:
+    """Проверяет текущие сетевые настройки через SSH."""
+    try:
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if not ssh_manager.connect():
+                    raise RuntimeError("SSH соединение не установлено")
 
-    Args:
-        actual_settings: Текущие настройки
-        expected_settings: Ожидаемые настройки
-        logger: Логгер для вывода сообщений
+                command = f"ipmitool lan print {interface}"
+                result = ssh_manager.execute_command(command)
+                if not result or not result['success']:
+                    raise RuntimeError(
+                        f"Ошибка выполнения команды: {result.get('error') if result else None}"
+                    )
 
-    Returns:
-        bool: True если настройки соответствуют
-    """
-    log = logger or logging.getLogger(__name__)
-    if not actual_settings or not expected_settings:
-        log.error("Отсутствуют настройки для проверки")
-        return False
+                # Парсим вывод ipmitool
+                settings = {}
+                if result['output']:
+                    for line in result['output'].splitlines():
+                        if ':' not in line:
+                            continue
+                        key, value = [x.strip() for x in line.split(':', 1)]
+                        settings[key] = value
 
-    success = True
-    for key, expected_value in expected_settings.items():
-        actual_value = actual_settings.get(key)
+                # Логируем текущие настройки
+                ssh_manager.logger.debug(
+                    f"Текущие настройки: "
+                    f"Progress={settings.get('Set in Progress')}, "
+                    f"Source={settings.get('IP Address Source')}, "
+                    f"IP={settings.get('IP Address')}, "
+                    f"Mask={settings.get('Subnet Mask')}, "
+                    f"Gateway={settings.get('Default Gateway IP')}"
+                )
 
-        if actual_value is None:
-            log.error(f"Отсутствует параметр {key}")
-            success = False
-            continue
+                return settings
 
-        # Приводим к строкам и нормализуем значения
-        actual_str = str(actual_value).lower().replace(' address', '')
-        expected_str = str(expected_value).lower().replace(' address', '')
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    ssh_manager.logger.debug(
+                        f"Попытка {attempt + 1} не удалась: {e}, повторяем..."
+                    )
+                    time.sleep(5)
+                    continue
+                raise
 
-        # Пропускаем временные значения 0.0.0.0
-        if actual_str == "0.0.0.0" and expected_str != "0.0.0.0":
-            log.info(
-                f"{key}: Временное значение 0.0.0.0, ожидаем изменения"
-            )
-            continue
-
-        if actual_str != expected_str:
-            log.error(
-                f"{key}: ожидается '{expected_value}', "
-                f"получено '{actual_value}'"
-            )
-            success = False
-
-    return success
+    except Exception as e:
+        raise RuntimeError(f"Ошибка проверки настроек: {e}")
+    finally:
+        ssh_manager.disconnect()
 
 
 def verify_port_open(
@@ -108,7 +112,7 @@ def verify_port_open(
             log.debug(f"Порт {port} доступен на {host}")
             return True
     except (socket.timeout, socket.error) as e:
-        log.error(f"Порт {port} недоступен на {host}: {e}")
+        log.error(f"Порт {port} не доступен на {host}: {e}")
         return False
 
 
@@ -301,7 +305,7 @@ def verify_network_access(
             return False
 
         if ports is None:
-            ports = [22, 623, 443]  # Порты по умолчанию
+            ports = [623, 443]
 
         # Проверяем ping
         if not ping_ip(ip, logger=log):
@@ -311,7 +315,7 @@ def verify_network_access(
         # Проверяем порты
         for port in ports:
             if not wait_for_port_open(ip, port, logger=log):
-                log.error(f"Порт {port} недоступен на {ip}")
+                log.error(f"Порт {port} не доступен на {ip}")
                 return False
 
         return True

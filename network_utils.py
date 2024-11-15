@@ -2,16 +2,14 @@
 
 import socket
 import time
-import ipaddress
 import logging
-from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, cast
 import requests
-from requests.exceptions import RequestException
-import paramiko  # type: ignore
-from paramiko.client import SSHClient  # type: ignore
+import paramiko
+from abc import ABC, abstractmethod
+from typing import Optional, Dict, Any, cast, List
 from typing_extensions import TypedDict, Protocol
 from datetime import datetime
+from paramiko import SSHClient
 
 # Константы для допустимых символов
 ALLOWED_HOSTNAME_CHARS = (
@@ -415,7 +413,7 @@ class RedfishManager(NetworkManager):
             redfish_config.get('retry_delay', DEFAULT_RETRY_DELAY)
         )
 
-        # Инициализация сессии
+        # Инициаизация сессии
         self.base_url = f"https://{self.redfish_host}:{self.redfish_port}"
         self.session = requests.Session()
         self.session.verify = self.verify_ssl
@@ -482,10 +480,10 @@ class RedfishManager(NetworkManager):
             timeout: Таймаут выполнения
 
         Returns:
-            NetworkResult: Результат ��ыполнени��
+            NetworkResult: Результат выполнения
 
         Raises:
-            CommandError: При ошибке выполнения запроса
+            CommandError: ри ошибке выполнения запроса
             TimeoutError: При превышении таймаута
         """
         try:
@@ -558,7 +556,7 @@ class RedfishManager(NetworkManager):
             headers: Заголовки запроса
 
         Returns:
-            Optional[requests.Response]: Ответ сервера или None при ошибке
+            Optional[requests.Response]: Ответ сервера или None пр ошибке
         """
         try:
             url = f"{self.base_url}{endpoint}"
@@ -602,3 +600,40 @@ def wait_for_port(
         except (socket.timeout, socket.error):
             time.sleep(retry_interval)
     return False
+
+
+def verify_network_access(
+    ip: str,
+    ports: Optional[List[int]] = None,
+    logger: Optional[logging.Logger] = None
+) -> bool:
+    """
+    Проверяет сетевую доступность.
+
+    Args:
+        ip: IP-адрес для проверки
+        ports: Список портов для проверки (по умолчанию [623, 443])
+        logger: Логгер для вывода сообщений
+
+    Returns:
+        bool: True если доступен хотя бы один порт
+    """
+    log = logger or logging.getLogger(__name__)
+    try:
+        if ports is None:
+            ports = [623, 443]  # IPMI и Redfish порты по умолчанию
+
+        # Проверяем каждый порт
+        for port in ports:
+            if wait_for_port(ip, port, timeout=30):
+                log.info(f"Порт {port} доступен на {ip}")
+                return True
+            else:
+                log.warning(f"Порт {port} недоступен на {ip}")
+
+        log.error(f"Все порты {ports} недоступны на {ip}")
+        return False
+
+    except Exception as e:
+        log.error(f"Ошибка при проверке доступности {ip}: {e}")
+        return False
