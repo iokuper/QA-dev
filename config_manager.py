@@ -20,6 +20,7 @@ class ConfigManager:
         self,
         config_file: str,
         logger: Optional[logging.Logger] = None
+        
     ) -> None:
         """
         Инициализирует менеджер конфигурации.

@@ -21,7 +21,8 @@ import os
 
 # Импортируем все тестеры
 from base_tester import BaseTester
-from network_tester import NetworkTester
+from ipmi_network_tester import IPMINetworkTester
+from redfish_network_tester import RedfishNetworkTester
 from hostname_tester import HostnameTester
 from ssh_tester import SSHTester
 from redfish_tester import RedfishTester
@@ -107,7 +108,8 @@ TEST_CATEGORIES: Dict[str, TestCategory] = {
         'name': 'Сетевые тесты',
         'description': 'Базовые сетевые настройки и подключения',
         'tests': [
-            'Network',          # Базовые сетевые настройки
+            'IPMINetwork',     # Базовые сетевые настройки через IPMI Tool
+            'RedfishNetwork',  # Базовые сетевые настройки через Redfish API
             'IPVersion',        # Поддержка IPv4/IPv6
             'IPFilter',         # Фильтрация IP-адресов
             'VLAN',             # Настройка VLAN
@@ -166,18 +168,31 @@ for category_key, category in TEST_CATEGORIES.items():
 
 # Описания тестеров
 TESTER_CLASSES: Dict[str, TesterDescription] = {
-    'Network': {
-        'name': 'Network Tester',
-        'class_obj': NetworkTester,
-        'description': 'Тестирование базовых сетевых настроек',
+    'IPMINetwork': {
+        'name': 'IPMI Network Tester',
+        'class_obj': IPMINetworkTester,
+        'description': 'Тестирование базовых сетевых настроек через IPMI',
         'details': """
         Проверяет:
-        - Настройку статического IP
-        - Настройку DHCP
+        - Настройку статического IP через IPMI
+        - Настройку DHCP через IPMI
         - Доступность сети
         """,
         'dependencies': [],
         'estimated_time': 120
+    },
+    'RedfishNetwork': {
+        'name': 'Redfish Network Tester',
+        'class_obj': RedfishNetworkTester,
+        'description': 'Тестирование базовых сетевых настроек через Redfish API',
+        'details': """
+        Проверяет:
+        - Настройку статического IP через Redfish API
+        - Настройку DHCP через Redfish API
+        - Доступность сети
+        """,
+        'dependencies': [],
+        'estimated_time': 130
     },
     'IPVersion': {
         'name': 'IP Version Tester',
@@ -189,7 +204,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Доступность интерфейсов по обоим протоколам
         - Корректность настроек IP версий
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 90
     },
     'IPFilter': {
@@ -202,7 +217,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Корректность блокировки/разрешения трафика
         - Стабильность работы фильтров под нагрузкой
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 110
     },
     'VLAN': {
@@ -215,7 +230,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Корректность маршрутизации VLAN
         - Изоляцию сетевого трафика между VLAN
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 100
     },
     'MAC': {
@@ -228,7 +243,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Корректность отображения MAC-адресов через все интерфейсы
         - Стабильность сети после изменения MAC-адреса
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 70
     },
     'Interface': {
@@ -241,7 +256,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Корректность настроек интерфейсов
         - Доступность интерфейсов через разные методы управления
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 60
     },
     'InterfaceStatus': {
@@ -254,7 +269,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Соответствие настроек интерфейсов
         - Обновление статуса интерфейсов при изменении настроек
         """,
-        'dependencies': ['Interface'],
+        'dependencies': [],
         'estimated_time': 50
     },
     'SSH': {
@@ -267,7 +282,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Корректность аутентификации
         - Скорость соединения и стабильность
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 90
     },
     'Redfish': {
@@ -280,7 +295,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Корректность получаемых данных
         - Возможность внесения изменений через API
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 150
     },
     'IPMI': {
@@ -293,7 +308,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Корректность настроек через IPMI
         - Функциональность управления питанием
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 120
     },
     'Load': {
@@ -306,7 +321,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Стабильность системы при высокой нагрузке
         - Возможность восстановления после нагрузки
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 200
     },
     'Diagnostic': {
@@ -316,11 +331,11 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         'details': """
         Проверяет:
         - Сбор диагностической информации
-        - Анализ системных ло��ов
+        - Анализ системных логов
         - Мониторинг состояния системы
         - Проверка работоспособности компонентов
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 180
     },
     'PowerState': {
@@ -333,7 +348,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Доступность BMC на всех этапах рабоы сервера
         - Корректность статуса питания через все интерфейсы
         """,
-        'dependencies': ['IPMI'],
+        'dependencies': [],
         'estimated_time': 130
     },
     'NTP': {
@@ -346,7 +361,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Синхронизацию времени с NTP-серверами
         - Стабильность и точность времени на сервере
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 90
     },
     'ManualNTP': {
@@ -359,7 +374,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Корректность применения настроек
         - Синхронизацию времени после ручной настройки
         """,
-        'dependencies': ['NTP'],
+        'dependencies': [],
         'estimated_time': 100
     },
     'SNMP': {
@@ -373,7 +388,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Функциональность чтения и записи OID
         - Получение SNMP-трапов
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 140
     },
     'DNS': {
@@ -386,7 +401,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Разрешение доменных имен
         - Стабильность DNS-сервиса
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 80
     },
     'Hostname': {
@@ -398,7 +413,7 @@ TESTER_CLASSES: Dict[str, TesterDescription] = {
         - Изменение имени хоста
         - Корректное отображение имени хоста через все интерфейсы
         """,
-        'dependencies': ['Network'],
+        'dependencies': [],
         'estimated_time': 60
     },
 }
@@ -841,7 +856,7 @@ class TestManager:
             console.print("[yellow]Нет выбранных тестеров.[/yellow]")
             return
 
-        table = Table(title="Выбранные Тест��ры для Подтверждения", box=box.MINIMAL_DOUBLE_HEAD, show_lines=True)
+        table = Table(title="Выбранные Тестеры для Подтверждения", box=box.MINIMAL_DOUBLE_HEAD, show_lines=True)
         table.add_column("Тестер", style="cyan", no_wrap=True)
         table.add_column("Описание", style="magenta")
         table.add_column("Время (с)", justify="right", style="green")
@@ -1034,7 +1049,7 @@ class TestManager:
                     f.write(f"Успешно: {success_count}/{len(results)}\n")
 
                     for result in results:
-                        status = "✓" if result['success'] else "���"
+                        status = "✓" if result['success'] else "✗"
                         msg = f" - {result.get('message', '')}" if result.get('message') else ""
                         error = f"\nОшибка: {result.get('error_details', '')}" if result.get('error_details') else ""
 

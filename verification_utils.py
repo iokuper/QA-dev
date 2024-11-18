@@ -104,7 +104,7 @@ def verify_port_open(
         logger: Логгер для вывода сообщений
 
     Returns:
-        bool: True если порт доступен
+        bool: True если пор�� доступен
     """
     log = logger or logging.getLogger(__name__)
     try:
@@ -235,7 +235,7 @@ def parse_lan_print(
         logger: Логгер для вывода сообщений
 
     Returns:
-        Optional[Dict[str, str]]: Словарь с настройками или None
+        Optional[Dict[str, str]]: Словарь с нас��р��йками или None
     """
     log = logger or logging.getLogger(__name__)
     try:
@@ -272,7 +272,7 @@ def parse_lan_print(
                     ip_address(settings[key])
             except ValueError:
                 log.error(
-                    f"Некорректный IP адрес в поле {key}: {settings[key]}"
+                    f"Некорректный IP адрес в п��ле {key}: {settings[key]}"
                 )
                 return None
 
@@ -283,43 +283,26 @@ def parse_lan_print(
         return None
 
 
-def verify_network_access(
-    ip: str,
-    ports: Optional[List[int]] = None,
-    logger: Optional[logging.Logger] = None
-) -> bool:
+def verify_network_access(ip: str, ports: List[int], wait_time: int = 30) -> bool:
     """
-    Проверяет сетевую доступность.
+    Проверяет доступность IP адреса и портов.
 
     Args:
-        ip: IP-адрес для проверки
-        ports: Список портов ля проверки
-        logger: Логгер для вывода сообщений
+        ip: IP адрес для проверки
+        ports: Список портов для проверки
+        wait_time: Время ожидания в секундах
 
     Returns:
-        bool: True если доступно
+        bool: True если IP и порты доступны, иначе False
     """
-    log = logger or logging.getLogger(__name__)
     try:
-        if not verify_ip_format(ip, log):
+        if not ping_ip(ip):
             return False
 
-        if ports is None:
-            ports = [623, 443]
-
-        # Проверяем ping
-        if not ping_ip(ip, logger=log):
-            log.error(f"Ping на {ip} не прошел")
-            return False
-
-        # Проверяем порты
         for port in ports:
-            if not wait_for_port_open(ip, port, logger=log):
-                log.error(f"Порт {port} не доступен на {ip}")
+            if not verify_port_open(ip, port, wait_time):
                 return False
 
         return True
-
-    except Exception as e:
-        log.error(f"Ошибка при проверке сетевой доступности {ip}: {e}")
+    except Exception:
         return False
