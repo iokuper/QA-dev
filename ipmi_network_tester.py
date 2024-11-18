@@ -1,4 +1,4 @@
-"""Модуль для тестирования сетевых настроек."""
+"""Модуль для тестирования сетевых настроек IPMI."""
 
 import logging
 import time
@@ -8,7 +8,7 @@ from verification_utils import verify_settings
 from network_utils import SSHManager, verify_network_access
 
 
-class NetworkTester(BaseTester):
+class IPMINetworkTester(BaseTester):
     """Класс для тестирования сетевых настроек."""
 
     def __init__(

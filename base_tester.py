@@ -191,10 +191,9 @@ class BaseTester:
             return False
 
     def update_bmc_ip(self, new_ip: str) -> None:
-        """Обновляет IP адрес BMC для IPMI/Redfish."""
+        """Обновляет IP-адрес BMC в переменной self.ipmi_host."""
         self.logger.info(f"Обновление IP BMC: {self.ipmi_host} -> {new_ip}")
         self.ipmi_host = new_ip
-        self.config_manager.update_bmc_ip(new_ip)
 
     def safe_restore_settings(self) -> bool:
         """
