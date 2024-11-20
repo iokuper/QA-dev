@@ -1,9 +1,9 @@
-# Byte-compiled / optimized / DLL files
+# Компилированные файлы Python
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Virtual environments
+# Виртуальные окружения
 venv/
 env/
 ENV/
@@ -24,22 +24,23 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Конфигурационные и секретные файлы
 *.cursorrules
 *.config
 *.secret.key
-
-# Logs and databases
-*.log
-*.sqlite3
-*.secret.key
 *.config.ini
 
-# IDE and editor directories
+# Логи и базы данных
+*.log
+*.sqlite3
+
+# Файлы и директории IDE/редакторов
 .vscode/
 .idea/
 *.sublime-project
 *.sublime-workspace
 
-# OS generated files
+# Файлы, генерируемые ОС
 .DS_Store
 Thumbs.db
