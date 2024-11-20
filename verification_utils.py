@@ -107,7 +107,11 @@ def verify_port_open(
         logger: Логгер для вывода сообщений
 
     Returns:
+<<<<<<< HEAD
         bool: True если пор доступен
+=======
+        bool: True если пор�� доступен
+>>>>>>> bace9c7bb48cb9c99bff08e420c4f7fecfa990ed
     """
     log = logger or logging.getLogger(__name__)
     try:
@@ -238,7 +242,7 @@ def parse_lan_print(
         logger: Логгер для вывода сообщений
 
     Returns:
-        Optional[Dict[str, str]]: Словарь с настройками или None
+        Optional[Dict[str, str]]: Словарь с нас��р��йками или None
     """
     log = logger or logging.getLogger(__name__)
     try:
@@ -275,7 +279,11 @@ def parse_lan_print(
                     ip_address(settings[key])
             except ValueError:
                 log.error(
+<<<<<<< HEAD
                     f"Некорректный IP адрес в пле {key}: {settings[key]}"
+=======
+                    f"Некорректный IP адрес в п��ле {key}: {settings[key]}"
+>>>>>>> bace9c7bb48cb9c99bff08e420c4f7fecfa990ed
                 )
                 return None
 
