@@ -24,8 +24,10 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
-eval $(ssh-agent -s)
-eval $(ssh-agent -s).pub
+*.cursorrules
+*.config
+*.secret.key
+
 # Logs and databases
 *.log
 *.sqlite3
