@@ -2,9 +2,9 @@
 
 import logging
 import time
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, cast
 from base_tester import BaseTester
-from verification_utils import verify_network_access, verify_settings
+from verification_utils import verify_settings, verify_port_open
 from network_utils import SSHManager, RedfishManager
 
 
@@ -25,56 +25,28 @@ class RedfishNetworkTester(BaseTester):
         """
         super().__init__(config_file, logger)
 
-        # Загрузка конфигурации для RedfishNetwork
-        network_config = self.config_manager.get_network_config('Redfish')
-        self.interface = network_config.get('interface', '1')
+        # Загрузка конфигурации Redfish
+        redfish_config = self.config_manager.get_network_config('Redfish')
 
-        # Проверяем доступность хоста
-        if not verify_network_access(
-            ip=self.ipmi_host,
-            ports=[443],  # Redfish использует порт 443
-            wait_time=30  # Используем wait_time вместо timeout
-        ):
-            raise RuntimeError(f"Хост {self.ipmi_host} недоступен по порту 443")
+        # Инициализация менеджеров с правильной пердачей config_file
+        self.redfish_manager = RedfishManager(str(config_file), logger)
+        self.ssh_tester = SSHManager(str(config_file), logger)
 
-        # Инициализация SSH менеджера
-        self.ssh_tester = SSHManager(config_file, logger)
-
-        # Инициализация Redfish менеджера с передачей self
-        self.redfish_manager = RedfishManager(self, logger)
-
-        # Таймауты и повторы
-        self.setup_timeout = int(network_config.get('setup_timeout', '30'))
-        self.verify_timeout = int(network_config.get('verify_timeout', '60'))
-        self.retry_count = int(network_config.get('retry_count', '3'))
-        self.retry_delay = int(network_config.get('retry_delay', '15'))
-
-        # Дополнительные параметры
-        self.verify_access = network_config.get(
-            'verify_access',
-            'true'
-        ).lower() == 'true'
-        self.backup_settings = network_config.get(
-            'backup_settings',
-            'true'
-        ).lower() == 'true'
-        self.check_all_interfaces = network_config.get(
-            'check_all_interfaces',
-            'true'
-        ).lower() == 'true'
-
-        # Сохранение исходных настроек
-        self.original_settings: Dict[str, Dict[str, Any]] = {}
+        # Параметры тестирования
+        self.interface = cast(str, redfish_config.get('interface', '1'))
+        self.verify_access = redfish_config.get('verify_access', 'true').lower() == 'true'
+        self.backup_settings = redfish_config.get('backup_settings', 'true').lower() == 'true'
+        self.check_all_interfaces = redfish_config.get('check_all_interfaces', 'true').lower() == 'true'
 
         # Загрузка параметров тестирования некорректных настроек
-        self.invalid_ips = [ip.strip() for ip in network_config.get('invalid_ips', '').split(',') if ip.strip()]
-        self.invalid_masks = [mask.strip() for mask in network_config.get('invalid_masks', '').split(',') if mask.strip()]
-        self.invalid_gateways = [gw.strip() for gw in network_config.get('invalid_gateways', '').split(',') if gw.strip()]
+        self.invalid_ips = [ip.strip() for ip in redfish_config.get('invalid_ips', '').split(',') if ip.strip()]
+        self.invalid_masks = [mask.strip() for mask in redfish_config.get('invalid_masks', '').split(',') if mask.strip()]
+        self.invalid_gateways = [gw.strip() for gw in redfish_config.get('invalid_gateways', '').split(',') if gw.strip()]
 
         self.logger.debug("Инициализация RedfishNetworkTester завершена")
 
     def get_current_settings_via_ssh(self) -> Dict[str, Any]:
-        """Получает текущие сетевые настройки через SSH к ОС с использованием ipmitool."""
+        """Получает текущие сетевые настойки через SSH к ОС с использованием ipmitool."""
         try:
             if not self.ssh_tester.connect():
                 raise RuntimeError("Не удалось подключиться к ОС через SSH")
@@ -180,7 +152,7 @@ class RedfishNetworkTester(BaseTester):
             endpoint = f"/redfish/v1/Managers/{manager_id}/EthernetInterfaces/"
             response = self.redfish_manager.run_request("GET", endpoint)
             if response is None or not response.ok:
-                raise RuntimeError(f"Не удалось получить список EthernetInterfaces через Redfish API: {response}")
+                raise RuntimeError(f"Не далось получить список EthernetInterfaces через Redfish API: {response}")
             data = response.json()
             interfaces = data.get('Members', [])
             if not interfaces:
@@ -227,7 +199,77 @@ class RedfishNetworkTester(BaseTester):
             self.logger.error(f"Ошибка определения начальных режимов: {e}", exc_info=True)
             return {}
 
-    def setup_static_ip_via_redfish(self, interface_id: str, ip: str, mask: str, gateway: str) -> bool:
+    def update_bmc_ip(self, new_ip: str) -> None:
+        """
+        Обновляет IP адрес BMC во всех компонентах.
+
+        Args:
+            new_ip: Новый IP адрес
+        """
+        try:
+            old_ip = self.ipmi_host
+            self.logger.info(f"Обновление IP BMC: {old_ip} -> {new_ip}")
+
+            # Обновляем IP в текущем экземпляре
+            self.ipmi_host = new_ip
+
+
+            time.sleep(20)
+            if not verify_port_open(old_ip, 443):
+                self.logger.info(f"Старый IP {old_ip} больше не доступен")
+                time.sleep(5)
+
+            # Ждем доступности нового IP
+            self.logger.info(f"Ожидание доступности нового IP {new_ip}")
+            if verify_port_open(new_ip, 443):
+                self.logger.info(f"Новый IP {new_ip} стал доступен")
+                time.sleep(5)
+            else:
+                raise RuntimeError(f"Таймаут ожидания доступности нового IP {new_ip}")
+
+            # Пересоздаем Redfish менеджер с новым IP
+            self.redfish_manager.disconnect()
+
+            # Создаем новую конфигурацию с обновленным IP
+            redfish_config = self.config_manager.get_network_config('Redfish')
+            redfish_config['redfish_host'] = new_ip
+
+            # Создаем новый экземпляр RedfishManager с обновленно конфигурацией
+            self.redfish_manager = RedfishManager(
+                self.config_file,
+                self.logger
+            )
+
+            # Обновляем host в redfish_manager напрямую
+            self.redfish_manager.host = new_ip
+            self.redfish_manager.base_url = f"https://{new_ip}:{self.redfish_manager.port}"
+
+            # Пробуем подключиться несколько раз
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                try:
+                    if self.redfish_manager.connect():
+                        self.logger.info(f"Успешное подключение к BMC по новому IP {new_ip}")
+                        return
+                    time.sleep(10)
+                except Exception as e:
+                    if attempt == max_attempts - 1:
+                        raise
+                    self.logger.warning(f"Попытка {attempt + 1} подключения не удалась: {e}")
+
+            raise RuntimeError(f"Не удалось подключиться к BMC по новому IP {new_ip} после {max_attempts} попыток")
+
+        except Exception as e:
+            self.logger.error(f"Ошибка при обновлении IP BMC: {e}")
+            raise
+
+    def setup_static_ip_via_redfish(
+        self,
+        interface_id: str,
+        ip: str,
+        mask: str,
+        gateway: str
+    ) -> bool:
         """Устанавливает статический IP через Redfish API."""
         try:
             self.logger.info(
@@ -235,10 +277,7 @@ class RedfishNetworkTester(BaseTester):
                 f"IP: {ip}, Маска: {mask}, Шлюз: {gateway}"
             )
 
-            # Сохраняем текущий IP для возможности восстановления
-            original_ip = self.ipmi_host
-
-            # Получаем текущие настройки и ETag
+            # Получаем текущие настройки
             response = self.redfish_manager.run_request(
                 "GET",
                 f"/redfish/v1/Managers/Self/EthernetInterfaces/{interface_id}"
@@ -246,13 +285,21 @@ class RedfishNetworkTester(BaseTester):
             if not response or not response.ok:
                 raise RuntimeError("Не удалось получить текущие настройки")
 
+            current_settings = response.json()
+            current_ip = current_settings.get('IPv4Addresses', [{}])[0].get('Address')
+
+            # Проверяем, не пытаемся ли мы установить те же настройки
+            if current_ip == ip:
+                self.logger.info(f"IP {ip} уже установлен, пропускаем настройку")
+                return True
+
+            # Формируем и отправляем запрос
             etag = response.headers.get('ETag')
             headers = {
                 'Content-Type': 'application/json',
                 'If-Match': etag if etag else ''
             }
 
-            # Формирум и отправляем запрос
             payload = {
                 'DHCPv4': {'DHCPEnabled': False},
                 'IPv4StaticAddresses': [{
@@ -278,45 +325,30 @@ class RedfishNetworkTester(BaseTester):
                     error_message += f", Ответ: {response.text}"
                 raise RuntimeError(error_message)
 
-            # Ждем применения настроек
-            time.sleep(self.retry_delay)
-
-            # Проверяем применение настроек
-            max_attempts = 10
-            verify_timeout = int(self.config_manager.get_network_config('Network')
-                               .get('verify_timeout', 30))
-
-            for attempt in range(max_attempts):
-                try:
-                    # Пробуем подключиться к новому IP
-                    if verify_network_access(ip, [443], verify_timeout):
-                        self.update_bmc_ip(ip)
-                        self.logger.info(
-                            f"Статический IP {ip} успешно установлен на {interface_id}"
-                        )
-                        return True
-                except Exception as e:
-                    self.logger.debug(f"Попытка {attempt + 1}: {e}")
-                time.sleep(3)
-
-            # Если не удалось подключиться к новому IP,
-            # пробуем восстановить старый
-            self.update_bmc_ip(original_ip)
-            raise RuntimeError(f"Не удалось подтвердить установку IP {ip}")
+            # Обновляем IP во всех компонентах
+            self.update_bmc_ip(ip)
+            return True
 
         except Exception as e:
             self.logger.error(f"Ошибка установки статического IP: {e}")
             return False
-        finally:
-            self.redfish_manager.disconnect()
 
     def enable_dhcp_via_redfish(self, interface_id: str) -> bool:
-        """Включает DHCP через Redfish API."""
+        """Включат DHCP через Redfish API."""
         try:
             self.logger.info(f"Включение DHCP на интерфейсе {interface_id}")
-            self.redfish_manager.connect()
 
-            # Получаем текущий ETag
+            # Получаем текущие настройки
+            settings = self.get_current_settings_via_redfish(interface_id)
+            if not settings:
+                raise RuntimeError("Не удалось получить текущие настройки")
+
+            # Проверяем, не включен ли уже DHCP
+            if settings.get('DHCPv4', {}).get('DHCPEnabled', False):
+                self.logger.info(f"DHCP уже включен на интерфейсе {interface_id}")
+                return True
+
+            # Получаем текущий ETag и отправляем запрос на включение DHCP
             endpoint = f"/redfish/v1/Managers/Self/EthernetInterfaces/{interface_id}"
             response = self.redfish_manager.run_request("GET", endpoint)
             if not response or not response.ok:
@@ -327,8 +359,13 @@ class RedfishNetworkTester(BaseTester):
             if etag:
                 headers['If-Match'] = etag
 
-            # Отправляем запрос на включение DHCP
-            payload = {'DHCPv4': {'DHCPEnabled': True}}
+            # Включаем DHCP
+            payload = {
+                "DHCPv4": {
+                    "DHCPEnabled": True
+                }
+            }
+
             response = self.redfish_manager.run_request(
                 "PATCH",
                 endpoint,
@@ -344,38 +381,43 @@ class RedfishNetworkTester(BaseTester):
 
             self.logger.info(f"Запрос на включение DHCP отправлен через Redfish API для интерфейса {interface_id}")
 
-            # Ждем применения настроек
-            time.sleep(self.retry_delay)
+            # Ждем применения настроек DHCP
+            time.sleep(10)
+            self.logger.debug("Проверка применения настроек...")
 
-            # Проверяем применение настроек через SSH
-            max_attempts = 10
-            for attempt in range(max_attempts):
+            for attempt in range(10):
                 try:
                     settings = verify_settings(self.ssh_tester, self.interface)
-                    if settings and settings.get('IP Address Source') == 'DHCP Address':
-                        new_ip = settings.get('IP Address')
-                        if new_ip and new_ip != '0.0.0.0':
-                            self.logger.info(f"DHCP включен, получен IP: {new_ip}")
-                            self.update_bmc_ip(new_ip)
-                            return True
+                    self.logger.debug(
+                        f"Попытка {attempt + 1}: "
+                        f"Source={settings.get('IP Address Source')}, "
+                        f"IP={settings.get('IP Address')}, "
+                        f"Progress={settings.get('Set in Progress')}"
+                    )
+
+                    if settings['Set in Progress'] == 'Set Complete':
+                        if settings['IP Address Source'] == 'DHCP Address':
+                            # Ждем получения IP и шлюза
+                            if (settings['IP Address'] != '0.0.0.0' and
+                                    settings['Default Gateway IP'] != '0.0.0.0'):
+                                new_ip = settings['IP Address']
+                                self.logger.info(
+                                    f"DHCP включен, получен IP: {new_ip}"
+                                )
+                                self.update_bmc_ip(new_ip)
+                                return True
                 except Exception as e:
-                    self.logger.debug(f"Ошибка проверки (попытка {attempt + 1}): {e}")
-                time.sleep(3)
+                    self.logger.debug(
+                        f"Ошибка проверки (попытка {attempt + 1}): {e}"
+                    )
 
-            # Проверяем через Redfish если SSH не сработал
-            response = self.redfish_manager.run_request("GET", endpoint)
-            if response and response.ok:
-                data = response.json()
-                if data.get('DHCPv4', {}).get('DHCPEnabled', False):
-                    return True
+                time.sleep(5)  # Уменьшаем задержку между попытками
 
-            return False
+            raise RuntimeError("Не удалось подтвердить применение DHCP настроек")
 
         except Exception as e:
             self.logger.error(f"Ошибка при включении DHCP через Redfish: {e}")
             return False
-        finally:
-            self.redfish_manager.disconnect()
 
     def test_invalid_settings(self, interface_id: str) -> bool:
         """Тестирует установку некорректных настроек на указанном интерфейсе."""
@@ -387,7 +429,7 @@ class RedfishNetworkTester(BaseTester):
             if manager_id is None:
                 raise RuntimeError("Не удалось получить ManagerId")
 
-            # П��лучаем текущий ETag
+            # Плучаем текущий ETag
             endpoint = f"/redfish/v1/Managers/{manager_id}/EthernetInterfaces/{interface_id}"
             get_response = self.redfish_manager.run_request("GET", endpoint)
             if get_response is None or not get_response.ok:
@@ -400,7 +442,7 @@ class RedfishNetworkTester(BaseTester):
             # Сохраняем исходные настройки
             original_settings = get_response.json()
 
-            # Тестирование некорректных IP-адресов
+            # Тестрование некорректных IP-адресов
             for invalid_ip in self.invalid_ips:
                 self.logger.debug(f"Тестирование некорректного IP: {invalid_ip}")
                 payload = {
@@ -461,7 +503,7 @@ class RedfishNetworkTester(BaseTester):
                 }
                 response = self.redfish_manager.run_request("PATCH", endpoint, data=payload, headers=headers)
                 if response and response.ok:
-                    self.logger.error(f"Некорректный шлюз {invalid_gateway} был принят системой!")
+                    self.logger.error(f"Некоректный шлюз {invalid_gateway} был принят системой!")
                     return False
                 else:
                     self.logger.info(f"Некорректный шлюз {invalid_gateway} был отклонен")
@@ -475,16 +517,22 @@ class RedfishNetworkTester(BaseTester):
             self.redfish_manager.disconnect()
 
     def perform_tests(self) -> None:
-        """Выполняет тестирование сетевых настроек."""
+        """Выпоняет тестирование сетевых настроек."""
         try:
             self.logger.info("Начало тестирования сетевых настроек через Redfish API")
+
+            # Получаем тестовые параметры из конфигурации
+            test_params = self.config_manager.get_test_params('Network')
+            test_ip = test_params['ips']
+            test_mask = test_params.get('subnet_mask', '255.255.255.0')
+            test_gateway = test_params['gateway']
 
             # Получаем ManagerId
             manager_id = self.get_manager_id()
             if manager_id is None:
                 raise RuntimeError("Не удалось получить ManagerId")
 
-            # Получаем все активные интерфейсы
+            # Получаем список активных интерфейсов
             interface_ids = self.get_active_interface_ids(manager_id)
             if not interface_ids:
                 raise RuntimeError("Не удалось получить список активных интерфейсов")
@@ -501,9 +549,8 @@ class RedfishNetworkTester(BaseTester):
 
             # Определяем начальные режимы
             initial_modes = self.get_initial_modes()
-            if not initial_modes:
-                raise RuntimeError("Не удалось определить начальные режимы")
 
+            # Тестируем каждый интерфейс
             for interface_id in interface_ids:
                 dhcp_enabled = initial_modes.get(interface_id, False)
                 mode_str = 'DHCP' if dhcp_enabled else 'Static'
@@ -522,7 +569,7 @@ class RedfishNetworkTester(BaseTester):
                             interface_id, test_ip, test_mask, test_gateway
                         ):
                             raise RuntimeError(
-                                "Не удалось переключиться на статический IP"
+                                "Не удалось переклюиться на статический IP"
                             )
 
                         self.logger.info(f"Тестирование некорректных настроек на {interface_id}")
@@ -552,7 +599,7 @@ class RedfishNetworkTester(BaseTester):
                             raise RuntimeError("Не удалось переключиться на DHCP")
 
                         self.logger.info(f"Восстановление исходных настроек {interface_id}")
-                        if not self.restore_interface_settings(interface_id):
+                        if not self.restore_settings():
                             raise RuntimeError(
                                 "Не удалось восстановить исходные настройки"
                             )
@@ -565,8 +612,8 @@ class RedfishNetworkTester(BaseTester):
                         self.safe_restore_settings()
                     raise
 
-            self.add_test_result('Network Configuration Test via Redfish', True)
-            self.logger.info("Тестирование сетевых настроек успешно завершено")
+                self.add_test_result('Network Configuration Test via Redfish', True)
+                self.logger.info("Тестирование сетевых настроек успешно завершено")
 
         except Exception as e:
             self.logger.error(f"Ошибка при тестировании: {str(e)}")
@@ -583,45 +630,61 @@ class RedfishNetworkTester(BaseTester):
                 return True
 
             for interface_id, settings in self.original_settings.items():
+                # Пропускаем USB интерфейс
+                if 'usb' in interface_id.lower():
+                    self.logger.info(f"Пропуск восстановления настроек USB интерфейса {interface_id}")
+                    continue
+
                 dhcp_enabled = settings.get('DHCPv4', {}).get('DHCPEnabled', False)
                 self.logger.info(
                     f"Восстановление исходных настроек для интерфейса {interface_id}"
                 )
 
+                # Сначала отключаем DHCP если он был включен
                 if dhcp_enabled:
-                    if not self.enable_dhcp_via_redfish(interface_id):
-                        self.logger.error(
-                            f"Не удалось восстановить DHCP на интерфейсе {interface_id}"
-                        )
-                        return False
-                else:
-                    ipv4_addresses = settings.get('IPv4StaticAddresses', [])
-                    if not ipv4_addresses:
-                        self.logger.error(
-                            f"Исходные статические настройки неполные для интерфейса {interface_id}"
-                        )
+                    # Ждем получения IP через DHCP
+                    time.sleep(30)  # Даем время на получение IP
+
+                    # Пытаемся найти новый IP через IPMI
+                    try:
+                        new_ip = self._get_current_ip_via_ipmi()
+                        if new_ip:
+                            self.ipmi_host = new_ip
+                            self.redfish_manager.host = new_ip
+                            self.redfish_manager.base_url = f"https://{new_ip}:{self.redfish_manager.port}"
+                    except Exception as e:
+                        self.logger.error(f"Не удалось получить новый IP через IPMI: {e}")
                         return False
 
-                    original_ip = ipv4_addresses[0].get('Address')
-                    original_mask = ipv4_addresses[0].get('SubnetMask')
-                    original_gateway = ipv4_addresses[0].get('Gateway')
+                # Восстанавливаем статические настройки
+                ipv4_addresses = settings.get('IPv4StaticAddresses', [])
+                if not ipv4_addresses:
+                    self.logger.error(
+                        f"Исходные статические настройки неполные для интерфейса {interface_id}"
+                    )
+                    return False
 
-                    if not original_ip or not original_mask or not original_gateway:
-                        self.logger.error(
-                            f"Исходные статические настройки неполные для интерфейса {interface_id}"
-                        )
-                        return False
+                original_ip = ipv4_addresses[0].get('Address')
+                original_mask = ipv4_addresses[0].get('SubnetMask')
+                original_gateway = ipv4_addresses[0].get('Gateway')
 
-                    if not self.setup_static_ip_via_redfish(
-                        interface_id,
-                        original_ip,
-                        original_mask,
-                        original_gateway
-                    ):
-                        self.logger.error(
-                            f"Не удалось восстановить статические настройки на интерфйсе {interface_id}"
-                        )
-                        return False
+                if not original_ip or not original_mask or not original_gateway:
+                    self.logger.error(
+                        f"Исходные статические настройки неполные для интерфейса {interface_id}"
+                    )
+                    return False
+
+                # Восстанавливаем статические настройки
+                if not self.setup_static_ip_via_redfish(
+                    interface_id,
+                    original_ip,
+                    original_mask,
+                    original_gateway
+                ):
+                    self.logger.error(
+                        f"Не удалось восстановить статические настройки на интерфйсе {interface_id}"
+                    )
+                    return False
 
             return True
 
@@ -647,7 +710,7 @@ class RedfishNetworkTester(BaseTester):
         self.logger.info(f"  Gateway: {settings.get('Default Gateway IP')}")
 
     def verify_current_settings(self, expected_settings: Dict[str, str]) -> bool:
-        """Проверяет текущие настройки через SSH."""
+        """Проверяет текуие настройки через SSH."""
         try:
             current = verify_settings(self.ssh_tester, self.interface)
             if not current:
@@ -665,3 +728,22 @@ class RedfishNetworkTester(BaseTester):
         except Exception as e:
             self.logger.error(f"Ошибка проверки настроек: {e}")
             return False
+
+    def _get_current_ip_via_ipmi(self) -> Optional[str]:
+        """Получает текущий IP через IPMI."""
+        try:
+            command = [
+                "ipmitool", "-I", "lanplus",
+                "-H", self.ipmi_host,
+                "-U", self.ipmi_username,
+                "-P", self.ipmi_password,
+                "lan", "print", self.interface
+            ]
+            result = self._run_command(command)
+            for line in result.stdout.splitlines():
+                if "IP Address" in line:
+                    return line.split(":", 1)[1].strip()
+            return None
+        except Exception as e:
+            self.logger.error(f"Ошибка получения IP через IPMI: {e}")
+            return None

@@ -12,6 +12,8 @@ from datetime import datetime
 from paramiko import SSHClient
 from urllib3.exceptions import InsecureRequestWarning
 
+from config_manager import ConfigManager
+
 # Константы для допустимых символов
 ALLOWED_HOSTNAME_CHARS = (
     'abcdefghijklmnopqrstuvwxyz'
@@ -41,7 +43,7 @@ class ConnectionError(NetworkError):
 
 
 class CommandError(NetworkError):
-    """Ошибка выполнения команды."""
+    """Оибка выполнения команды."""
     pass
 
 
@@ -376,90 +378,76 @@ class SSHManager(NetworkManager):
 
 
 class RedfishManager:
-    """Менеджер для работы через Redfish API."""
+    """Класс для работы с Redfish API."""
 
     def __init__(
         self,
-        base_tester: 'BaseTester',  # Предполагаем, что BaseTester определён
+        config_file: str,
         logger: Optional[logging.Logger] = None
     ) -> None:
         """
-        Инициализирует Redfish менеджер.
+        Инициализирует менеджер Redfish.
 
         Args:
-            base_tester: Экземпляр BaseTester с конфигурацией и текущим IP-адресом BMC
+            config_file: Путь к файлу конфигурации
             logger: Логгер для вывода сообщений
         """
-        self.base_tester = base_tester
+        self.config_file = config_file
         self.logger = logger or logging.getLogger(__name__)
-
-        # Инициализируем сессию requests
         self.session = requests.Session()
-        self.session.verify = False  # Отключаем проверку SSL-сертификата
-        requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+        self.session.verify = False
+        self.connected = False
 
-        # Загрузка настроек из конфигурации
-        redfish_config = self.base_tester.config_manager.get_network_config('Redfish')
-        self.verify_ssl = redfish_config.get('verify_ssl', 'false').lower() == 'true'
-        self.timeout = float(redfish_config.get('timeout', DEFAULT_TIMEOUT))
-        self.retry_count = int(redfish_config.get('retry_count', DEFAULT_RETRY_COUNT))
-        self.retry_delay = float(redfish_config.get('retry_delay', DEFAULT_RETRY_DELAY))
+        # Загружаем конфигурацию
+        self.config_manager = ConfigManager(config_file)
+        redfish_config = self.config_manager.get_network_config('Redfish')
 
-        # Параметры подключения (инициализируем, будут обновлены при подключении)
-        self.redfish_port = DEFAULT_REDFISH_PORT
-        self.auth = None
-        self.base_url = ''
+        # Получаем учетные данные
+        credentials = self.config_manager.get_credentials('Redfish')
+        self.username = cast(str, credentials.get('username'))
+        self.password = cast(str, credentials.get('password'))
 
-    def connect(self) -> None:
+        # Параметры подключения
+        self.host = cast(str, redfish_config.get('redfish_host'))
+        self.port = int(redfish_config.get('redfish_port', '443'))
+        self.timeout = float(redfish_config.get('timeout', '30'))
+
+        # Формируем базовый URL
+        self.base_url = f"https://{self.host}:{self.port}"
+
+    def connect(self) -> bool:
         """
         Устанавливает соединение с Redfish API.
 
-        Raises:
-            ConnectionError: При ошибке подключения
+        Returns:
+            bool: True если соединение установлено успешно
         """
         try:
-            # Обновляем параметры подключения с текущими данными
-            self.redfish_port = DEFAULT_REDFISH_PORT
-            self.auth = (self.base_tester.ipmi_username, self.base_tester.ipmi_password)
-            self.base_url = f"https://{self.base_tester.ipmi_host}:{self.redfish_port}"
-
-            self.logger.debug(f"Подключение к Redfish API по адресу {self.base_url}")
+            # Устанавливаем базовую аутентификацию
+            self.session.auth = (self.username, self.password)
 
             # Проверяем соединение
             response = self.session.get(
-                f"{self.base_url}/redfish/v1",
-                auth=self.auth,
-                timeout=self.timeout,
-                verify=self.verify_ssl
+                f"{self.base_url}/redfish/v1/",
+                timeout=self.timeout
             )
             response.raise_for_status()
-            self.logger.debug("Redfish соединение установлено")
 
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 401:
-                msg = f"Ошибка аутентификации Redfish: {e}"
-                self.logger.error(msg)
-                raise AuthenticationError(msg)
-            else:
-                msg = f"Ошибка HTTP при подключении к Redfish: {e}"
-                self.logger.error(msg)
-                raise ConnectionError(msg)
+            self.connected = True
+            self.logger.debug("Соединение с Redfish API установлено")
+            return True
+
         except Exception as e:
-            msg = f"Ошибка подключения к Redfish API: {e}"
-            self.logger.error(msg)
-            raise ConnectionError(msg)
+            self.logger.error(f"Ошибка подключения к Redfish API: {e}")
+            self.connected = False
+            return False
 
     def disconnect(self) -> None:
-        """
-        Закрывает соединение с Redfish API.
-        """
-        try:
+        """Закрывает соединение с Redfish API."""
+        if self.connected:
             self.session.close()
-            self.logger.debug("Redfish соединение закрыто")
-        except Exception as e:
-            msg = f"Ошибка при закрытии Redfish соединения: {e}"
-            self.logger.error(msg)
-            raise NetworkError(msg)
+            self.connected = False
+            self.logger.debug("Соединение с Redfish API закрыто")
 
     def run_request(
         self,
@@ -469,61 +457,50 @@ class RedfishManager:
         headers: Optional[Dict[str, str]] = None
     ) -> Optional[requests.Response]:
         """
-        Выполняет HTTP-запрос к Redfish API.
+        Выполняет HTTP запрос к Redfish API.
 
         Args:
-            method: HTTP метод ('GET', 'POST', 'PATCH', 'DELETE')
-            endpoint: URI ресурса Redfish API
-            data: Тело запроса (для методов 'POST' и 'PATCH')
-            headers: Заголовки запроса
+            method: HTTP метод
+            endpoint: Путь эндпоинта
+            data: Данные для отправки
+            headers: Дополнительные заголовки
 
         Returns:
-            Response: Объект ответа requests или None в случае ошибки
-
-        Raises:
-            NetworkError: При ошибке выполнения запроса
+            Optional[requests.Response]: Ответ сервера или None при ошибке
         """
-        url = f"https://{self.base_tester.ipmi_host}:{self.redfish_port}{endpoint}"
-        self.logger.debug(f"Отправка {method} запроса к {url} с данными {data} и заголовками {headers}")
-        response = None
         try:
+            url = f"{self.base_url}{endpoint}"
+
+            # Используем базовые заголовки если не переданы другие
+            request_headers = {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+            if headers:
+                request_headers.update(headers)
+
             response = self.session.request(
                 method=method,
                 url=url,
                 json=data,
-                headers=headers,
-                auth=self.auth,
-                verify=self.verify_ssl,
+                headers=request_headers,
                 timeout=self.timeout
             )
-            self.logger.debug(f"Получен ответ: статус {response.status_code}, тело {response.text}")
-            response.raise_for_status()
+
+            # Логируем детали запроса и ответа
+            self.logger.debug(
+                f"Redfish запрос: {method} {url}\n"
+                f"Заголовки: {request_headers}\n"
+                f"Данные: {data}\n"
+                f"Статус: {response.status_code}\n"
+                f"Ответ: {response.text[:200]}..."  # Логируем только начало ответа
+            )
+
             return response
-        except requests.exceptions.HTTPError as e:
-            self.logger.error(f"Ошибка HTTP при выполнении запроса: {e}")
-            if response is not None:
-                self.logger.error(f"Тело ответа: {response.text}")
-            return response  # Возвращаем response даже при ошибке для обработки в вызывающем коде
-        except Exception as e:
-            self.logger.error(f"Неожиданная ошибка при выполнении запроса: {e}", exc_info=True)
-            raise NetworkError(f"Неожиданная ошибка при выполнении запроса: {e}")
 
-    def verify_connection(self) -> bool:
-        """
-        Проверяет соединение с Redfish API.
-
-        Returns:
-            bool: True, если соединение успешно, иначе False
-        """
-        try:
-            self.connect()
-            self.logger.debug("Проверка соединения с Redfish API прошла успешно")
-            return True
         except Exception as e:
-            self.logger.error(f"Ошибка проверки Redfish соединения: {e}")
-            return False
-        finally:
-            self.disconnect()
+            self.logger.error(f"Ошибка при выполнении Redfish запроса: {e}")
+            return None
 
 def wait_for_port(
     host: str,

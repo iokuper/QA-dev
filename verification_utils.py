@@ -38,6 +38,7 @@ def verify_ip_format(ip: str, logger: Optional[logging.Logger] = None) -> bool:
 
 def verify_settings(ssh_manager: 'SSHManager', interface: str) -> Dict[str, str]:
     """Проверяет текущие сетевые настройки через SSH."""
+    settings: Dict[str, str] = {}
     try:
         max_retries = 3
         for attempt in range(max_retries):
@@ -87,6 +88,8 @@ def verify_settings(ssh_manager: 'SSHManager', interface: str) -> Dict[str, str]
     finally:
         ssh_manager.disconnect()
 
+    return settings
+
 
 def verify_port_open(
     host: str,
@@ -104,7 +107,7 @@ def verify_port_open(
         logger: Логгер для вывода сообщений
 
     Returns:
-        bool: True если пор�� доступен
+        bool: True если пор доступен
     """
     log = logger or logging.getLogger(__name__)
     try:
@@ -235,7 +238,7 @@ def parse_lan_print(
         logger: Логгер для вывода сообщений
 
     Returns:
-        Optional[Dict[str, str]]: Словарь с нас��р��йками или None
+        Optional[Dict[str, str]]: Словарь с настройками или None
     """
     log = logger or logging.getLogger(__name__)
     try:
@@ -272,7 +275,7 @@ def parse_lan_print(
                     ip_address(settings[key])
             except ValueError:
                 log.error(
-                    f"Некорректный IP адрес в п��ле {key}: {settings[key]}"
+                    f"Некорректный IP адрес в пле {key}: {settings[key]}"
                 )
                 return None
 
